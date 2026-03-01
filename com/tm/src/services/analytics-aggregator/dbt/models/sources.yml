@@ -1,0 +1,407 @@
+# =============================================================================
+# SOURCES DEFINITION
+# =============================================================================
+# File này định nghĩa các external data sources.
+#
+# SOURCES LÀ GÌ?
+# - Data không được manage bởi dbt
+# - Raw data từ ETL/ELT processes
+# - External systems (databases, APIs)
+#
+# TẠI SAO DÙNG SOURCES?
+# - Centralized documentation
+# - Freshness checks (data có up-to-date không)
+# - Lineage tracking
+# - Testing
+#
+# CÁCH DÙNG TRONG MODELS:
+# {{ source('source_name', 'table_name') }}
+#
+# Ví dụ:
+# SELECT * FROM {{ source('clickhouse', 'events') }}
+# =============================================================================
+
+version: 2
+
+sources:
+  # ===========================================================================
+  # CLICKHOUSE SOURCE
+  # ===========================================================================
+  # Raw tracking events từ ClickHouse.
+  # Data được ingest bởi tracking-ingestor service.
+  # ===========================================================================
+  - name: clickhouse
+    description: |
+      ClickHouse database chứa raw tracking events.
+
+      **Data Flow:**
+      1. Event Producer -> Kafka (tracking-events topic)
+      2. Kafka -> ClickHouse Kafka Engine
+      3. Materialized View -> events table
+
+      **Ingestion Frequency:** Real-time (sub-second latency)
+
+      **Data Retention:** 365 days
+
+    database: tracking
+    schema: default  # ClickHouse không có schema concept, dùng default
+
+    # =========================================================================
+    # FRESHNESS
+    # =========================================================================
+    # Kiểm tra data có fresh không.
+    # dbt source freshness sẽ check và alert nếu data stale.
+    # =========================================================================
+    freshness:
+      # Warn nếu không có data trong 1 giờ
+      warn_after:
+        count: 1
+        period: hour
+      # Error nếu không có data trong 6 giờ
+      error_after:
+        count: 6
+        period: hour
+
+    # Column để check freshness (thường là timestamp column)
+    loaded_at_field: processed_time
+
+    # =========================================================================
+    # TABLES
+    # =========================================================================
+    tables:
+      # -----------------------------------------------------------------------
+      # EVENTS TABLE
+      # -----------------------------------------------------------------------
+      # Main table chứa tất cả tracking events.
+      # -----------------------------------------------------------------------
+      - name: events
+        identifier: events  # Tên thực của table trong database
+
+        description: |
+          **Raw tracking events từ dropshipping platform.**
+
+          Table này chứa mọi user interaction bao gồm:
+          - Page views
+          - Product interactions (view, click, add to cart)
+          - Search events
+          - Checkout và purchase events
+          - User events (login, signup)
+
+          **Schema Notes:**
+          - event_time: Thời điểm event xảy ra (client-side)
+          - processed_time: Thời điểm event được insert vào ClickHouse
+          - Giá và costs được lưu dưới dạng cents (integer) để tránh floating point errors
+
+          **Partitioning:**
+          - Partitioned by toYYYYMM(event_time)
+          - Mỗi partition ~ 1 tháng data
+
+          **Ordering:**
+          - ORDER BY (event_type, user_id, event_time)
+          - Tối ưu cho queries filter theo event_type và user_id
+
+        # External link (optional)
+        # docs:
+        #   show: true
+        #   doc_url: https://wiki.example.com/tracking-events
+
+        # Tags để categorize
+        tags: ['raw', 'events', 'tracking']
+
+        # =====================================================================
+        # COLUMNS
+        # =====================================================================
+        # Định nghĩa và document từng column.
+        # Tests được define ở đây.
+        # =====================================================================
+        columns:
+          # -------------------------------------------------------------------
+          # EVENT IDENTIFICATION
+          # -------------------------------------------------------------------
+          - name: event_id
+            description: |
+              UUID v4 duy nhất cho mỗi event.
+              Generated bởi event-producer service.
+            tests:
+              - not_null
+              - unique
+
+          - name: event_type
+            description: |
+              Loại event. Possible values:
+              - page_view, home_page
+              - search, search_filter, search_sort
+              - product_view, product_click, product_image_zoom, product_review
+              - add_to_cart, remove_from_cart, update_cart, view_cart
+              - checkout_start, checkout_address, checkout_payment, checkout_confirm
+              - purchase
+              - sign_up, login, logout
+              - add_to_wishlist, remove_from_wishlist
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [
+                    'page_view', 'home_page',
+                    'search', 'search_filter', 'search_sort',
+                    'product_view', 'product_click', 'product_image_zoom', 'product_review',
+                    'add_to_cart', 'remove_from_cart', 'update_cart', 'view_cart',
+                    'checkout_start', 'checkout_address', 'checkout_payment', 'checkout_confirm',
+                    'purchase',
+                    'sign_up', 'login', 'logout',
+                    'add_to_wishlist', 'remove_from_wishlist'
+                  ]
+
+          - name: event_time
+            description: |
+              Timestamp khi event xảy ra (client-side).
+              UTC timezone.
+              Precision: milliseconds
+            tests:
+              - not_null
+
+          - name: processed_time
+            description: |
+              Timestamp khi event được insert vào ClickHouse.
+              Dùng để track ingestion lag.
+
+          # -------------------------------------------------------------------
+          # USER IDENTIFICATION
+          # -------------------------------------------------------------------
+          - name: user_id
+            description: |
+              ID của registered user.
+              0 nếu user là anonymous (chưa đăng nhập).
+
+          - name: session_id
+            description: |
+              UUID của browser session.
+              Một user có thể có nhiều sessions.
+              Dùng để track user journey trong 1 session.
+            tests:
+              - not_null
+
+          - name: device_id
+            description: |
+              Device fingerprint.
+              Dùng để identify device across sessions.
+              Hữu ích cho cross-device tracking.
+
+          # -------------------------------------------------------------------
+          # DEVICE & PLATFORM
+          # -------------------------------------------------------------------
+          - name: platform
+            description: "Platform: web, ios, android"
+            tests:
+              - accepted_values:
+                  values: ['web', 'ios', 'android']
+                  severity: warn
+
+          - name: device_type
+            description: "Device type: desktop, mobile, tablet"
+            tests:
+              - accepted_values:
+                  values: ['desktop', 'mobile', 'tablet', 'unknown']
+                  severity: warn
+
+          - name: browser
+            description: "Browser name: Chrome, Firefox, Safari, Edge, etc."
+
+          - name: browser_version
+            description: "Browser version string"
+
+          - name: os
+            description: "Operating system: Windows, macOS, iOS, Android, Linux"
+
+          - name: os_version
+            description: "OS version string"
+
+          - name: screen_resolution
+            description: "Screen resolution, format: WIDTHxHEIGHT (e.g., 1920x1080)"
+
+          # -------------------------------------------------------------------
+          # LOCATION
+          # -------------------------------------------------------------------
+          - name: ip_address
+            description: |
+              Client IP address.
+              Dùng cho geo-location lookup.
+              Note: Có thể bị mask cho privacy compliance.
+
+          - name: country_code
+            description: |
+              ISO 3166-1 alpha-2 country code.
+              Ví dụ: US, UK, VN, JP
+
+          - name: city
+            description: "City name từ geo-location lookup"
+
+          # -------------------------------------------------------------------
+          # TRAFFIC SOURCE
+          # -------------------------------------------------------------------
+          - name: traffic_source
+            description: |
+              Nguồn traffic:
+              - organic: SEO
+              - paid: Paid ads
+              - social: Social media
+              - email: Email marketing
+              - direct: Direct traffic
+              - referral: Referral links
+              - affiliate: Affiliate marketing
+
+          - name: utm_source
+            description: "UTM source parameter (e.g., google, facebook)"
+
+          - name: utm_medium
+            description: "UTM medium parameter (e.g., cpc, email)"
+
+          - name: utm_campaign
+            description: "UTM campaign name"
+
+          - name: utm_content
+            description: "UTM content (e.g., ad variation)"
+
+          - name: utm_term
+            description: "UTM term (keyword)"
+
+          - name: referrer_url
+            description: "Full referrer URL"
+
+          # -------------------------------------------------------------------
+          # PAGE INFO
+          # -------------------------------------------------------------------
+          - name: page_url
+            description: "Full page URL"
+
+          - name: page_path
+            description: "Page path (không bao gồm domain)"
+
+          - name: page_title
+            description: "HTML page title"
+
+          # -------------------------------------------------------------------
+          # PRODUCT INFO
+          # -------------------------------------------------------------------
+          - name: product_id
+            description: |
+              Product ID.
+              0 nếu event không liên quan đến product.
+
+          - name: product_sku
+            description: "Product SKU code"
+
+          - name: product_name
+            description: "Product name"
+
+          - name: category_id
+            description: "Product category ID"
+
+          - name: category_name
+            description: "Product category name (có thể hierarchical)"
+
+          - name: brand
+            description: "Product brand"
+
+          - name: price_cents
+            description: |
+              Product price in cents (USD).
+              Ví dụ: $19.99 = 1999 cents
+            tests:
+              - dbt_utils.accepted_range:
+                  min_value: 0
+                  severity: warn
+
+          - name: currency
+            description: "Currency code (ISO 4217), thường là USD"
+
+          - name: quantity
+            description: "Quantity (cho cart và purchase events)"
+
+          # -------------------------------------------------------------------
+          # SEARCH INFO
+          # -------------------------------------------------------------------
+          - name: search_query
+            description: "Search query text"
+
+          - name: search_results_count
+            description: "Số kết quả tìm kiếm"
+
+          - name: search_filters
+            description: "Applied filters (JSON format)"
+
+          # -------------------------------------------------------------------
+          # ORDER INFO
+          # -------------------------------------------------------------------
+          - name: order_id
+            description: |
+              Order ID.
+              Format: ORD-{timestamp}-{uuid_short}
+              Chỉ có cho purchase events.
+
+          - name: cart_id
+            description: "Cart/basket ID"
+
+          - name: subtotal_cents
+            description: "Order subtotal (before discounts, shipping, tax)"
+
+          - name: discount_cents
+            description: "Discount amount"
+
+          - name: shipping_cents
+            description: "Shipping cost"
+
+          - name: tax_cents
+            description: "Tax amount"
+
+          - name: total_cents
+            description: |
+              Total order amount.
+              = subtotal - discount + shipping + tax
+
+          - name: payment_method
+            description: |
+              Payment method:
+              credit_card, debit_card, paypal, apple_pay, google_pay,
+              bank_transfer, cod (cash on delivery), crypto
+
+          # -------------------------------------------------------------------
+          # SUPPLIER INFO (Dropshipping Specific)
+          # -------------------------------------------------------------------
+          - name: supplier_id
+            description: |
+              Dropshipping supplier ID.
+              Mỗi product có thể từ supplier khác nhau.
+
+          - name: supplier_name
+            description: "Supplier company name"
+
+          - name: supplier_country
+            description: |
+              Supplier country (ISO code).
+              Ảnh hưởng đến shipping time.
+
+          - name: cost_price_cents
+            description: |
+              **Cost price từ supplier (cents).**
+
+              Đây là giá bạn trả cho supplier.
+              Margin = price_cents - cost_price_cents
+
+              **QUAN TRỌNG cho dropshipping:**
+              - Track margin per product
+              - Identify profitable products
+              - Supplier negotiation data
+
+          - name: estimated_shipping_days
+            description: |
+              Estimated shipping days từ supplier đến customer.
+              Thường 7-28 days cho international dropshipping.
+
+          # -------------------------------------------------------------------
+          # EXTRA
+          # -------------------------------------------------------------------
+          - name: extra_properties
+            description: |
+              Extra properties (JSON).
+              Chứa các data không có trong schema chính.
+              Flexible cho future extensions.

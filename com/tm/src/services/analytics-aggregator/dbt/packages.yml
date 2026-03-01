@@ -1,0 +1,95 @@
+# =============================================================================
+# DBT PACKAGES
+# =============================================================================
+# File này định nghĩa external dbt packages (dependencies).
+#
+# DBT PACKAGES LÀ GÌ?
+# - Reusable macros và models
+# - Shared functionality giữa projects
+# - Community-maintained utilities
+#
+# CÁCH CÀI ĐẶT:
+# cd com/tm/src/services/analytics-aggregator/dbt
+# dbt deps
+#
+# Packages sẽ được download vào dbt_packages/
+# =============================================================================
+
+packages:
+  # ===========================================================================
+  # DBT-UTILS
+  # ===========================================================================
+  # Utility macros phổ biến nhất cho dbt.
+  #
+  # Macros hữu ích:
+  # - {{ dbt_utils.generate_surrogate_key(['col1', 'col2']) }}
+  #   Tạo unique key từ nhiều columns
+  #
+  # - {{ dbt_utils.pivot() }}
+  #   Pivot data (rows to columns)
+  #
+  # - {{ dbt_utils.unpivot() }}
+  #   Unpivot data (columns to rows)
+  #
+  # - {{ dbt_utils.date_spine() }}
+  #   Generate date series
+  #
+  # - {{ dbt_utils.get_column_values() }}
+  #   Get distinct values of a column
+  #
+  # Tests:
+  # - dbt_utils.accepted_range (min/max values)
+  # - dbt_utils.expression_is_true
+  # - dbt_utils.unique_combination_of_columns
+  #
+  # Docs: https://github.com/dbt-labs/dbt-utils
+  # ===========================================================================
+  - package: dbt-labs/dbt_utils
+    version: "1.1.1"
+
+  # ===========================================================================
+  # DBT-DATE (Optional)
+  # ===========================================================================
+  # Date/time manipulation macros.
+  #
+  # - {{ dbt_date.get_date_dimension() }}
+  # - {{ dbt_date.week_start() }}
+  # - {{ dbt_date.n_weeks_ago() }}
+  # ===========================================================================
+  # - package: calogica/dbt_date
+  #   version: "0.9.1"
+
+  # ===========================================================================
+  # DBT-EXPECTATIONS (Optional)
+  # ===========================================================================
+  # Data quality testing framework.
+  # Inspired by Great Expectations.
+  #
+  # Tests:
+  # - expect_column_values_to_be_between
+  # - expect_column_values_to_match_regex
+  # - expect_table_row_count_to_equal
+  # ===========================================================================
+  # - package: calogica/dbt_expectations
+  #   version: "0.10.1"
+
+# =============================================================================
+# NOTES
+# =============================================================================
+#
+# 1. Version Pinning:
+#    Luôn pin version cụ thể (1.1.1, không phải >=1.0)
+#    Tránh breaking changes khi update
+#
+# 2. Package Sources:
+#    - dbt Hub: package: dbt-labs/dbt_utils
+#    - Git: git: https://github.com/user/repo.git
+#    - Local: local: /path/to/package
+#
+# 3. Update Packages:
+#    dbt deps --upgrade
+#
+# 4. Lock File:
+#    dbt deps tạo package-lock.yml
+#    Commit file này để reproducible builds
+# =============================================================================

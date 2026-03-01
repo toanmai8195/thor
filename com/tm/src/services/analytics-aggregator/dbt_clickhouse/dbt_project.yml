@@ -1,0 +1,62 @@
+name: 'dbt_clickhouse_silver'
+version: '1.0.0'
+config-version: 2
+
+# Profile chứa connection info (xem profiles.yml)
+profile: 'clickhouse_silver'
+
+# Paths
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# =============================================================================
+# MODEL CONFIGURATIONS
+# =============================================================================
+# Silver layer config:
+#   - Materialized as TABLE (không phải VIEW)
+#     → Sync job cần đọc data từ ClickHouse → cần actual table
+#   - Engine = ReplacingMergeTree
+#     → Deduplicate by event_id (chạy OPTIMIZE để force dedup)
+#   - incremental_strategy = append
+#     → Chỉ thêm data mới, không rebuild toàn bộ
+# =============================================================================
+models:
+  dbt_clickhouse_silver:
+    silver:
+      +materialized: incremental
+      +incremental_strategy: append
+      +on_schema_change: append_new_columns
+
+      silver_events:
+        +schema: tracking
+        +engine: "ReplacingMergeTree()"
+        +order_by: "['event_date', 'event_type', 'user_id', 'event_id']"
+        +unique_key: event_id
+        +partition_by:
+          field: event_date
+          data_type: date
+          granularity: month
+
+      silver_sessions:
+        +schema: tracking
+        +engine: "AggregatingMergeTree()"
+        +order_by: "['session_date', 'session_id']"
+        +unique_key: session_id
+        +partition_by:
+          field: session_date
+          data_type: date
+          granularity: month
+
+      silver_users:
+        +materialized: table    # Full refresh - user dim
+        +schema: tracking
+        +engine: "ReplacingMergeTree(updated_at)"
+        +order_by: "['user_id']"

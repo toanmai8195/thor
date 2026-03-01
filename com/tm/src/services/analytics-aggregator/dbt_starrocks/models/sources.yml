@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: silver
+    description: Silver layer synced từ ClickHouse
+    database: analytics
+    schema: analytics
+    tables:
+      - name: silver_payments
+        description: Cleaned payment events
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: payment_date
+            tests: [not_null]
+          - name: amount
+            tests: [not_null]
+          - name: status
+            tests:
+              - accepted_values:
+                  values: [paid, pending, failed, refunded, cancelled, unknown]

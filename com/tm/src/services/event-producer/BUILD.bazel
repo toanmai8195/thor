@@ -1,0 +1,151 @@
+# =============================================================================
+# BUILD FILE CHO EVENT PRODUCER SERVICE
+# =============================================================================
+# File này định nghĩa cách build service bằng Bazel.
+#
+# BAZEL LÀ GÌ?
+# Bazel là build system của Google, được thiết kế cho:
+# - Reproducible builds: Cùng input = cùng output
+# - Incremental builds: Chỉ rebuild những gì thay đổi
+# - Multi-language: Hỗ trợ Go, Java, Python, C++, etc.
+# - Scalable: Xử lý được monorepos lớn
+#
+# CONCEPTS QUAN TRỌNG:
+#
+# 1. Target: Một unit có thể build (binary, library, test)
+#    - Format: //path/to/package:target_name
+#    - Ví dụ: //com/tm/src/services/event-producer:event-producer
+#
+# 2. Rule: Định nghĩa cách build một loại target
+#    - go_binary: Build Go executable
+#    - go_library: Build Go library
+#    - go_test: Build và run Go tests
+#
+# 3. Dependency: Target phụ thuộc vào targets khác
+#    - deps: Dependencies trong cùng repo
+#    - External dependencies: Từ go.mod (được quản lý bởi gazelle)
+#
+# CÁCH CHẠY:
+# ```bash
+# # Build binary
+# bazel build //com/tm/src/services/event-producer:event-producer
+#
+# # Run binary
+# bazel run //com/tm/src/services/event-producer:event-producer
+#
+# # Run với arguments
+# bazel run //com/tm/src/services/event-producer:event-producer -- --topic=my-topic --rate=1000
+#
+# # Build Docker image (nếu có rules_docker)
+# bazel build //com/tm/src/services/event-producer:image
+# ```
+# =============================================================================
+
+# Load Go rules từ rules_go
+# go_binary: Rule để build Go executable
+# go_library: Rule để build Go library
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+# =============================================================================
+# GO LIBRARY
+# =============================================================================
+# Library chứa code chính của service.
+# Tách riêng library giúp:
+# - Share code giữa binary và tests
+# - Dễ dàng test từng phần
+# - Clean dependencies
+# =============================================================================
+go_library(
+    name = "event-producer_lib",
+
+    # Source files thuộc library này
+    srcs = ["main.go"],
+
+    # Import path - unique identifier cho package
+    # Format thường là: module_name/path/to/package
+    importpath = "thor/com/tm/src/services/event-producer",
+
+    # Visibility: Ai có thể depend vào library này
+    # "//visibility:public": Bất kỳ target nào trong repo
+    # "//visibility:private": Chỉ targets trong cùng package
+    # ["//path/to:package"]: Chỉ packages cụ thể
+    visibility = ["//visibility:private"],
+
+    # Dependencies
+    # External deps (từ go.mod) có prefix @
+    # Internal deps có prefix //
+    deps = [
+        # Sarama: Kafka client library cho Go
+        # - High-level consumer/producer APIs
+        # - Full Kafka protocol support
+        # - Maintained by IBM
+        "@com_github_ibm_sarama//:sarama",
+
+        # UUID: Generate UUIDs cho event_id, session_id
+        # - UUID v4 (random)
+        # - Cryptographically secure
+        "@com_github_google_uuid//:uuid",
+    ],
+)
+
+# =============================================================================
+# GO BINARY
+# =============================================================================
+# Executable binary của service.
+# Đây là target chính để run service.
+# =============================================================================
+go_binary(
+    name = "event-producer",
+
+    # Embed library vào binary
+    # Tất cả code từ library sẽ được include
+    embed = [":event-producer_lib"],
+
+    # Visibility
+    visibility = ["//visibility:public"],
+
+    # Go compilation mode
+    # - "pure": Pure Go, no CGO
+    # - "c-shared": Build as C shared library
+    # - "c-archive": Build as C archive
+    pure = "on",
+
+    # Static linking - tạo binary không phụ thuộc external libs
+    # Useful cho Docker containers (alpine)
+    static = "on",
+
+    # Target platform (optional, cho cross-compilation)
+    # goos = "linux",
+    # goarch = "amd64",
+)
+
+# =============================================================================
+# CONTAINER IMAGE (Optional - cần rules_oci hoặc rules_docker)
+# =============================================================================
+# Uncomment nếu muốn build Docker image với Bazel
+#
+# load("@rules_oci//oci:defs.bzl", "oci_image", "oci_tarball")
+# load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+#
+# # Package binary vào tar
+# pkg_tar(
+#     name = "event-producer_tar",
+#     srcs = [":event-producer"],
+#     package_dir = "/app",
+# )
+#
+# # Build OCI image
+# oci_image(
+#     name = "image",
+#     base = "@distroless_base",
+#     tars = [":event-producer_tar"],
+#     entrypoint = ["/app/event-producer"],
+# )
+#
+# # Export image as tarball
+# oci_tarball(
+#     name = "image_tarball",
+#     image = ":image",
+#     repo_tags = ["event-producer:latest"],
+# )
+# =============================================================================

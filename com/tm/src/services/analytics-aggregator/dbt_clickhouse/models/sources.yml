@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: Bronze layer - raw payment events từ Go ingestor
+    database: tracking
+    schema: tracking
+    tables:
+      - name: payments_bronze
+        description: Raw payment events, chưa validate
+        freshness:
+          warn_after: {count: 2, period: hour}
+          error_after: {count: 6, period: hour}
+        loaded_at_field: updated_at
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: payment_date
+            tests: [not_null]

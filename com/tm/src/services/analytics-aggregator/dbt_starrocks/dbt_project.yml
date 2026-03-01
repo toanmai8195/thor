@@ -1,0 +1,27 @@
+name: 'dbt_starrocks_gold'
+version: '1.0.0'
+config-version: 2
+
+profile: 'starrocks_gold'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# =============================================================================
+# MODEL CONFIGURATIONS
+# =============================================================================
+# Gold layer config:
+#   - Materialized as TABLE (pre-aggregated cho Superset performance)
+#   - Full refresh strategy (data nhỏ hơn, aggregated rồi)
+#   - StarRocks PRIMARY KEY model → cho phép UPSERT
+# =============================================================================
+models:
+  dbt_starrocks_gold:
+    gold:
+      +materialized: table
+      +on_schema_change: append_new_columns

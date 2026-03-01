@@ -1,0 +1,84 @@
+# =============================================================================
+# BAZEL CONFIGURATION
+# =============================================================================
+# File này chứa Bazel configurations và flags.
+#
+# BAZELRC LÀ GÌ?
+# - File config mặc định được đọc khi chạy bazel commands
+# - Định nghĩa flags, settings, platforms
+# - Có thể override bằng command line flags
+# =============================================================================
+
+# =============================================================================
+# COMMON SETTINGS
+# =============================================================================
+
+# Sử dụng bzlmod (Bazel 6+)
+common --enable_bzlmod
+
+# =============================================================================
+# BUILD SETTINGS
+# =============================================================================
+
+# Verbose failures để debug dễ hơn
+build --verbose_failures
+
+# Hiển thị progress
+build --show_progress
+
+# Sử dụng sandbox cho build isolation
+build --spawn_strategy=sandboxed
+
+# =============================================================================
+# MACOS SPECIFIC - FIX XCODE ISSUES WITH BAZEL 9
+# =============================================================================
+# Bazel 9 có breaking changes với xcode config trên macOS.
+# Workaround: Disable xcode config check
+# =============================================================================
+
+# Không require xcode
+build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# Sử dụng Go compiler pure mode (không cần CGO)
+build --@rules_go//go/config:pure
+
+# Disable CGO hoàn toàn cho Go builds
+build --action_env=CGO_ENABLED=0
+
+# =============================================================================
+# GO SETTINGS
+# =============================================================================
+
+# Go race detector (chỉ cho debug)
+# build --@rules_go//go/config:race
+
+# Go test verbosity
+test --test_output=errors
+
+# =============================================================================
+# PLATFORM SPECIFIC
+# =============================================================================
+
+# macOS ARM64 (Apple Silicon)
+build:macos-arm64 --platforms=@rules_go//go/toolchain:darwin_arm64
+
+# Linux AMD64
+build:linux-amd64 --platforms=@rules_go//go/toolchain:linux_amd64
+
+# =============================================================================
+# PROFILES
+# =============================================================================
+
+# Development profile
+build:dev --compilation_mode=fastbuild
+
+# Release profile
+build:release --compilation_mode=opt
+build:release --strip=always
+
+# =============================================================================
+# REMOTE CACHE (Optional)
+# =============================================================================
+# Uncomment để enable remote caching
+# build --remote_cache=http://localhost:9092
+# build --remote_upload_local_results=true

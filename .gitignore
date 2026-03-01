@@ -1,32 +1,349 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# =============================================================================
+# GITIGNORE - DROPSHIPPING TRACKING PLATFORM
+# =============================================================================
+# Bao gồm: Go, Bazel, Python, Docker, IDE, OS files
+# =============================================================================
+
+# =============================================================================
+# BAZEL
+# =============================================================================
+# Bazel tạo các symlinks và directories trong project root
+
+# Bazel symlinks (tạo bởi bazel build)
+/bazel-*
+
+# Bazel user-specific files
+.bazelrc.user
+user.bazelrc
+
+# Bazel lock file (có thể commit hoặc không tùy project)
+# MODULE.bazel.lock
+
+# =============================================================================
+# GO
+# =============================================================================
+
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Test binary
 *.test
 
-# Code coverage profiles and other test artifacts
+# Coverage
 *.out
 coverage.*
 *.coverprofile
 profile.cov
+coverage.html
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# Go workspace
 go.work
 go.work.sum
 
-# env file
-.env
+# Vendor directory (nếu không commit vendor)
+# vendor/
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Go build cache (thường ở $GOPATH, nhưng đề phòng)
+__debug_bin
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+Pipfile.lock
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# Ruff
+.ruff_cache/
+
+# =============================================================================
+# DBT
+# =============================================================================
+
+# dbt artifacts
+target/
+dbt_packages/
+dbt_modules/
+logs/
+
+# dbt docs
+site/
+
+# =============================================================================
+# DOCKER
+# =============================================================================
+
+# Docker Compose override (local configs)
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Docker data volumes (nếu mount local)
+.docker-data/
+docker-data/
+
+# =============================================================================
+# AIRFLOW
+# =============================================================================
+
+# Airflow logs và metadata
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+standalone_admin_password.txt
+
+# Airflow logs directory
+logs/
+
+# =============================================================================
+# SECRETS & ENVIRONMENT
+# =============================================================================
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Secret files
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+credentials.json
+service-account*.json
+
+# AWS
+.aws/
+
+# GCP
+.gcp/
+gcloud/
+
+# =============================================================================
+# IDE & EDITORS
+# =============================================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (IntelliJ, GoLand, PyCharm)
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# =============================================================================
+# OS FILES
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# LOGS & TEMP FILES
+# =============================================================================
+
+# Logs
+*.log
+logs/
+log/
+
+# Temp files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+.tmp/
+tmp/
+temp/
+
+# Cache
+.cache/
+cache/
+
+# =============================================================================
+# DATA FILES
+# =============================================================================
+
+# Large data files (có thể upload riêng)
+*.csv
+*.parquet
+*.avro
+*.json.gz
+*.csv.gz
+data/
+!data/.gitkeep
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# =============================================================================
+# MISC
+# =============================================================================
+
+# Node.js (nếu có frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Helm
+charts/*.tgz

@@ -1,0 +1,533 @@
+# =============================================================================
+# DOCKER COMPOSE - MEDALLION ARCHITECTURE
+# =============================================================================
+# Luồng dữ liệu theo Medallion Architecture:
+#
+#  Producer → Kafka → Ingestor → ClickHouse Bronze (raw)
+#                                       ↓
+#                               dbt_clickhouse (Silver: clean/enrich)
+#                                       ↓
+#                               Sync Job (CH → StarRocks)
+#                                       ↓
+#                               dbt_starrocks (Gold: aggregate)
+#                                       ↓
+#                    ┌──────────────────┴─────────────────────┐
+#                 Superset                            Segment Engine
+#            (Gold dashboards)                               ↓
+#                                          ┌────────────────────────────┐
+#                                    StarRocks Bitmap             HBase
+#                                   (segment_users)          (user_segments)
+#
+# SERVICES:
+# 1. Kafka + Zookeeper   - Event streaming
+# 2. ClickHouse          - Bronze + Silver layer (OLAP, write-optimized)
+# 3. StarRocks FE + BE   - Silver mirror + Gold + Segment bitmap
+# 4. HBase               - User segments key-value store
+# 5. Airflow             - Pipeline orchestration
+# 6. Superset            - BI dashboards
+# 7. Redis + Postgres    - Metadata & broker
+# =============================================================================
+
+version: '3.8'
+
+networks:
+  tracking-network:
+    driver: bridge
+    name: tracking-network
+
+volumes:
+  # Kafka & Zookeeper
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+
+  # Databases
+  clickhouse-data:
+  clickhouse-logs:
+  starrocks-fe-meta:
+  starrocks-be-storage:
+
+  # HBase
+  hbase-data:
+
+  # Airflow
+  airflow-logs:
+  airflow-plugins:
+
+  # Superset
+  superset-home:
+
+  # Redis
+  redis-data:
+
+services:
+  # ===========================================================================
+  # ZOOKEEPER
+  # Dùng chung cho cả Kafka và HBase
+  # ===========================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    hostname: zookeeper
+    networks:
+      - tracking-network
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # KAFKA - Event streaming backbone
+  # Flow: Event Producer → Kafka → Tracking Ingestor → ClickHouse Bronze
+  # ===========================================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    hostname: kafka
+    networks:
+      - tracking-network
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 10737418240
+      KAFKA_LOG_CLEANUP_POLICY: delete
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # Kafka UI - Monitor topics, consumer groups, lag
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    networks:
+      - tracking-network
+    ports:
+      - "8082:8080"  # Dùng 8082 để tránh conflict với HBase REST
+    environment:
+      KAFKA_CLUSTERS_0_NAME: tracking-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      - kafka
+
+  # ===========================================================================
+  # CLICKHOUSE - Bronze + Silver Layer
+  #
+  # BRONZE: Raw events từ Kafka (events_bronze table)
+  #   - Giữ tất cả data thô, không biến đổi
+  #   - TTL: 90 ngày
+  #
+  # SILVER: Cleaned/enriched data (silver_* tables - do dbt tạo)
+  #   - Deduplicate, normalize, derive fields
+  #   - TTL: 365 ngày
+  #
+  # Tại sao ClickHouse cho Bronze/Silver?
+  #   - Ghi nhanh: 1M+ inserts/giây
+  #   - Nén tốt: column-oriented storage
+  #   - SQL đơn giản để dbt transform
+  # ===========================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: clickhouse
+    hostname: clickhouse
+    networks:
+      - tracking-network
+    ports:
+      - "8123:8123"  # HTTP interface (dbt, sync job dùng port này)
+      - "9000:9000"  # Native TCP (Go ingestor dùng port này)
+      - "9009:9009"  # Interserver HTTP
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.d/custom.xml:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # STARROCKS - Silver Mirror + Gold + Segment Bitmap
+  #
+  # SILVER MIRROR: Copy từ ClickHouse silver (sync destination)
+  #   - Cho phép dbt StarRocks join silver với gold models
+  #
+  # GOLD: Business aggregations (do dbt tạo)
+  #   - gold_daily_metrics, gold_product_performance
+  #   - gold_marketing_attribution, gold_user_segments_base
+  #
+  # SEGMENT BITMAP: RoaringBitmap per segment
+  #   - Đếm nhanh: bitmap_count(user_bitmap)
+  #   - Intersection: bitmap_and(seg_a, seg_b)
+  #   - Union: bitmap_or(seg_a, seg_b)
+  #
+  # Tại sao StarRocks cho Gold/Segment?
+  #   - MPP: Sub-second analytics queries
+  #   - BITMAP: Native RoaringBitmap cho segmentation
+  #   - Superset integration tốt
+  # ===========================================================================
+  starrocks-fe:
+    image: starrocks/fe-ubuntu:3.2-latest
+    container_name: starrocks-fe
+    hostname: starrocks-fe
+    networks:
+      - tracking-network
+    ports:
+      - "8030:8030"  # HTTP port (Stream Load endpoint)
+      - "9020:9020"  # RPC port
+      - "9030:9030"  # MySQL protocol (dbt, Superset, segment engine)
+    environment:
+      JAVA_OPTS: "-Xmx4g -Xms4g"
+    volumes:
+      - starrocks-fe-meta:/opt/starrocks/fe/meta
+    command: /opt/starrocks/fe/bin/start_fe.sh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8030/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  starrocks-be:
+    image: starrocks/be-ubuntu:3.2-latest
+    container_name: starrocks-be
+    hostname: starrocks-be
+    networks:
+      - tracking-network
+    ports:
+      - "8040:8040"  # BE HTTP port (Stream Load data node)
+      - "9050:9050"  # BE heartbeat port
+      - "9060:9060"  # BE brpc port
+    environment:
+      JAVA_OPTS: "-Xmx8g -Xms8g"
+    volumes:
+      - starrocks-be-storage:/opt/starrocks/be/storage
+    command: >
+      /bin/bash -c "
+        sleep 30 &&
+        mysql -h starrocks-fe -P 9030 -u root -e \"ALTER SYSTEM ADD BACKEND 'starrocks-be:9050';\" || true &&
+        /opt/starrocks/be/bin/start_be.sh
+      "
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+
+  # StarRocks schema init (Silver mirror + Gold + Segments)
+  starrocks-init:
+    image: mysql:8.0
+    container_name: starrocks-init
+    networks:
+      - tracking-network
+    volumes:
+      - ./starrocks/init:/init
+    command: >
+      bash -c "
+        echo 'Waiting for StarRocks to be ready...' &&
+        sleep 60 &&
+        mysql -h starrocks-fe -P 9030 -u root --connect-timeout=30 < /init/01_silver_mirror.sql &&
+        mysql -h starrocks-fe -P 9030 -u root --connect-timeout=30 < /init/02_gold.sql &&
+        mysql -h starrocks-fe -P 9030 -u root --connect-timeout=30 < /init/03_segments.sql &&
+        echo 'StarRocks initialization complete'
+      "
+    depends_on:
+      starrocks-be:
+        condition: service_started
+    restart: on-failure
+
+  # ===========================================================================
+  # HBASE - User Segment Store
+  #
+  # Lưu trữ user → segments mapping dạng key-value:
+  #   Row key: user_id (e.g., "12345")
+  #   Column family: "seg"
+  #   Qualifiers: segment_id (e.g., "seg_high_value", "seg_cart_abandoner")
+  #   Value: timestamp khi user được thêm vào segment
+  #
+  # Tại sao HBase?
+  #   - O(1) lookup: "user X thuộc segments nào?"
+  #   - Scale tốt: hàng triệu users
+  #   - Dùng cho downstream: CRM, push notifications, personalization
+  #
+  # Dùng ZooKeeper của Kafka (tiết kiệm resource)
+  # ===========================================================================
+  hbase:
+    image: harisekhon/hbase:2.1
+    container_name: hbase
+    hostname: hbase
+    networks:
+      - tracking-network
+    ports:
+      - "16000:16000"  # HBase Master RPC
+      - "16010:16010"  # HBase Master Web UI
+      - "16020:16020"  # RegionServer RPC
+      - "16030:16030"  # RegionServer Web UI
+      - "9090:9090"    # Thrift Server (Python happybase dùng port này)
+      - "9095:9095"    # Thrift Web UI
+      - "8080:8080"    # REST API
+      - "8085:8085"    # REST Web UI
+    environment:
+      # Dùng Kafka's ZooKeeper thay vì embedded ZooKeeper
+      # → Không bị conflict port 2181
+      HBASE_MANAGES_ZK: "false"
+      HBASE_CONF_hbase_zookeeper_quorum: zookeeper
+      HBASE_CONF_hbase_zookeeper_property_clientPort: "2181"
+      HBASE_CONF_hbase_rootdir: /hbase-data
+    volumes:
+      - hbase-data:/hbase-data
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "echo status | hbase shell 2>/dev/null | grep -q 'servers'"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
+  # HBase table initialization
+  hbase-init:
+    image: harisekhon/hbase:2.1
+    container_name: hbase-init
+    networks:
+      - tracking-network
+    volumes:
+      - ./hbase/init.sh:/tmp/init.sh:ro
+    environment:
+      HBASE_CONF_hbase_zookeeper_quorum: zookeeper
+      HBASE_CONF_hbase_zookeeper_property_clientPort: "2181"
+    command: bash /tmp/init.sh
+    depends_on:
+      hbase:
+        condition: service_healthy
+    restart: on-failure
+
+  # ===========================================================================
+  # REDIS - Airflow Celery broker
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    hostname: redis
+    networks:
+      - tracking-network
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # POSTGRESQL - Metadata (Airflow + Superset)
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    hostname: postgres
+    networks:
+      - tracking-network
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_MULTIPLE_DATABASES: airflow,superset
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # AIRFLOW - Medallion Pipeline Orchestration
+  #
+  # DAG: medallion_pipeline
+  #   Task 1: dbt_clickhouse (silver layer) - transform bronze → silver
+  #   Task 2: sync_to_starrocks            - copy silver CH → StarRocks
+  #   Task 3: dbt_starrocks (gold layer)   - aggregate silver → gold
+  #   Task 4: segment_engine               - compute segments from gold
+  #   Task 5: superset_refresh             - refresh dashboards
+  # ===========================================================================
+  airflow-init:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: airflow-init
+    networks:
+      - tracking-network
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:admin123@postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://admin:admin123@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin123
+      # Service endpoints cho DAGs
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: tracking
+      STARROCKS_HOST: starrocks-fe
+      STARROCKS_HTTP_PORT: "8030"
+      STARROCKS_MYSQL_PORT: "9030"
+      STARROCKS_DB: analytics
+      HBASE_THRIFT_HOST: hbase
+      HBASE_THRIFT_PORT: "9090"
+    command: version
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  airflow-webserver:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: airflow-webserver
+    hostname: airflow-webserver
+    networks:
+      - tracking-network
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *airflow-env
+    volumes:
+      - ../src/services/analytics-aggregator/dags:/opt/airflow/dags:ro
+      - ../src/services/analytics-aggregator:/opt/analytics:ro
+      - airflow-logs:/opt/airflow/logs
+      - airflow-plugins:/opt/airflow/plugins
+    command: webserver
+    depends_on:
+      - airflow-init
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: airflow-scheduler
+    hostname: airflow-scheduler
+    networks:
+      - tracking-network
+    environment:
+      <<: *airflow-env
+    volumes:
+      - ../src/services/analytics-aggregator/dags:/opt/airflow/dags:ro
+      - ../src/services/analytics-aggregator:/opt/analytics:ro
+      - airflow-logs:/opt/airflow/logs
+    command: scheduler
+    depends_on:
+      - airflow-init
+
+  airflow-worker:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: airflow-worker
+    hostname: airflow-worker
+    networks:
+      - tracking-network
+    environment:
+      <<: *airflow-env
+    volumes:
+      - ../src/services/analytics-aggregator/dags:/opt/airflow/dags:ro
+      - ../src/services/analytics-aggregator:/opt/analytics:ro
+      - airflow-logs:/opt/airflow/logs
+    command: celery worker
+    depends_on:
+      - airflow-scheduler
+
+  # ===========================================================================
+  # SUPERSET - Gold Layer Dashboards
+  #
+  # Kết nối trực tiếp vào StarRocks gold layer
+  # Dashboards:
+  #   - Daily Revenue & Conversion Funnel
+  #   - Product Performance
+  #   - Marketing Attribution
+  #   - User Segment Overview
+  # ===========================================================================
+  superset:
+    image: apache/superset:3.1.0
+    container_name: superset
+    hostname: superset
+    networks:
+      - tracking-network
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "thor-superset-secret-key-2024"
+      SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://admin:admin123@postgres:5432/superset
+      ADMIN_USERNAME: admin
+      ADMIN_EMAIL: admin@localhost
+      ADMIN_PASSWORD: admin123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - superset-home:/app/superset_home
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    command: >
+      /bin/bash -c "
+        superset db upgrade &&
+        superset fab create-admin --username admin --firstname Admin --lastname User --email admin@localhost --password admin123 || true &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088 --with-threads
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

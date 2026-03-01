@@ -1,0 +1,84 @@
+# =============================================================================
+# BUILD FILE CHO TRACKING INGESTOR SERVICE
+# =============================================================================
+# Service này consume events từ Kafka và insert vào ClickHouse.
+#
+# DEPENDENCIES:
+# - Sarama: Kafka client (same as event-producer)
+# - clickhouse-go/v2: ClickHouse native protocol client
+#
+# CÁCH CHẠY:
+# ```bash
+# # Build
+# bazel build //com/tm/src/services/tracking-ingestor:tracking-ingestor
+#
+# # Run với default config
+# bazel run //com/tm/src/services/tracking-ingestor:tracking-ingestor
+#
+# # Run với custom config
+# bazel run //com/tm/src/services/tracking-ingestor:tracking-ingestor -- \
+#   --kafka=kafka:29092 \
+#   --clickhouse-host=clickhouse \
+#   --batch-size=10000
+# ```
+# =============================================================================
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+# =============================================================================
+# GO LIBRARY
+# =============================================================================
+go_library(
+    name = "tracking-ingestor_lib",
+    srcs = ["main.go"],
+    importpath = "thor/com/tm/src/services/tracking-ingestor",
+    visibility = ["//visibility:private"],
+    deps = [
+        # Sarama: Kafka client
+        # - ConsumerGroup API cho high-level consumption
+        # - Automatic partition rebalancing
+        # - Offset management
+        "@com_github_ibm_sarama//:sarama",
+
+        # clickhouse-go v2: ClickHouse native client
+        # - Native protocol (port 9000) - nhanh hơn HTTP
+        # - Batch insert support
+        # - Connection pooling
+        # - Compression support
+        "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
+    ],
+)
+
+# =============================================================================
+# GO BINARY
+# =============================================================================
+go_binary(
+    name = "tracking-ingestor",
+    embed = [":tracking-ingestor_lib"],
+    visibility = ["//visibility:public"],
+    pure = "on",
+    static = "on",
+)
+
+# =============================================================================
+# NOTES ABOUT CLICKHOUSE CLIENT OPTIONS
+# =============================================================================
+# clickhouse-go có 2 modes:
+#
+# 1. Native Protocol (recommended):
+#    - Port 9000
+#    - Binary protocol, nhanh hơn
+#    - Full feature support
+#    - Import: github.com/ClickHouse/clickhouse-go/v2
+#
+# 2. HTTP Interface:
+#    - Port 8123
+#    - REST-like, dễ debug
+#    - Có thể dùng standard database/sql
+#    - Import: github.com/ClickHouse/clickhouse-go/v2 với driver "http"
+#
+# Chọn Native Protocol cho production vì:
+# - Lower latency
+# - Higher throughput
+# - Better batch insert performance
+# =============================================================================

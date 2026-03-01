@@ -1,0 +1,259 @@
+# =============================================================================
+# DBT PROJECT CONFIGURATION
+# =============================================================================
+# dbt (data build tool) là công cụ transform data trong warehouse.
+#
+# DBT LÀ GÌ?
+# - Transform layer trong ELT (Extract, Load, Transform)
+# - Viết transformations bằng SQL (hoặc Python)
+# - Version control, testing, documentation
+# - Moduler: models, macros, tests, snapshots
+#
+# TẠI SAO DÙNG DBT?
+# - SQL-first: Data engineers quen thuộc
+# - Testable: Data quality checks
+# - Documented: Auto-generate docs
+# - Incremental: Chỉ process new data
+# - Lineage: Track data dependencies
+#
+# WORKFLOW:
+# 1. Raw data đã ở ClickHouse (từ tracking-ingestor)
+# 2. dbt transforms và aggregates
+# 3. Results được load vào StarRocks (cho analytics)
+#
+# DBT CONCEPTS:
+#
+# 1. Models:
+#    - SQL files trong models/
+#    - Mỗi model = 1 table/view
+#    - Có thể reference models khác với {{ ref('model_name') }}
+#
+# 2. Sources:
+#    - External data (không do dbt manage)
+#    - Định nghĩa trong models/sources.yml
+#    - Reference với {{ source('source_name', 'table_name') }}
+#
+# 3. Materialization:
+#    - view: CREATE VIEW (không lưu data)
+#    - table: CREATE TABLE AS SELECT (full refresh)
+#    - incremental: INSERT vào existing table (chỉ new data)
+#    - ephemeral: CTE, không tạo table
+#
+# 4. Tests:
+#    - not_null, unique, accepted_values
+#    - Relationships (foreign key check)
+#    - Custom tests
+#
+# 5. Macros:
+#    - Reusable SQL snippets
+#    - Jinja templating
+# =============================================================================
+
+# Tên project
+name: 'dropshipping_analytics'
+
+# Version của dbt project
+version: '1.0.0'
+
+# Yêu cầu dbt version
+require-dbt-version: [">=1.5.0", "<2.0.0"]
+
+# Config version (luôn dùng 2)
+config-version: 2
+
+# =============================================================================
+# PROFILE
+# =============================================================================
+# Profile định nghĩa connection đến database.
+# Profile được định nghĩa trong ~/.dbt/profiles.yml (local)
+# hoặc trong environment variables (production).
+#
+# Với project này:
+# - Source: ClickHouse (raw events)
+# - Target: StarRocks (aggregated data)
+# =============================================================================
+profile: 'dropshipping_analytics'
+
+# =============================================================================
+# DIRECTORIES
+# =============================================================================
+# Cấu trúc thư mục của dbt project
+# =============================================================================
+
+# Models: SQL transformations
+model-paths: ["models"]
+
+# Analysis: Ad-hoc queries (không được run)
+analysis-paths: ["analyses"]
+
+# Tests: Data quality tests
+test-paths: ["tests"]
+
+# Seeds: Static CSV data
+seed-paths: ["seeds"]
+
+# Macros: Reusable SQL snippets
+macro-paths: ["macros"]
+
+# Snapshots: Track slowly changing dimensions
+snapshot-paths: ["snapshots"]
+
+# Compiled SQL và artifacts
+target-path: "target"
+
+# Packages (external dependencies)
+packages-install-path: "dbt_packages"
+
+# Files to ignore
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# =============================================================================
+# MODELS CONFIGURATION
+# =============================================================================
+# Default configs cho models.
+# Có thể override ở từng model hoặc folder.
+#
+# Cấu trúc models/:
+# ├── staging/       # Clean và standardize raw data
+# ├── intermediate/  # Business logic transforms
+# ├── marts/         # Final analytics models
+# └── sources.yml    # Source definitions
+# =============================================================================
+
+models:
+  dropshipping_analytics:
+    # =========================================================================
+    # STAGING MODELS
+    # =========================================================================
+    # Staging models clean và standardize raw data.
+    # - 1:1 với source tables
+    # - Rename columns, cast types
+    # - Minor transformations
+    # - Materialized as views (no storage cost)
+    # =========================================================================
+    staging:
+      +materialized: view
+      +schema: staging
+      # Tag để group models
+      +tags: ['staging', 'hourly']
+
+    # =========================================================================
+    # INTERMEDIATE MODELS
+    # =========================================================================
+    # Intermediate models chứa business logic.
+    # - Join multiple sources
+    # - Calculate metrics
+    # - Không dùng trực tiếp bởi end users
+    # - Materialized as views hoặc ephemeral
+    # =========================================================================
+    intermediate:
+      +materialized: ephemeral  # Inline as CTE, không tạo table
+      +tags: ['intermediate']
+
+    # =========================================================================
+    # MARTS (Data Marts)
+    # =========================================================================
+    # Marts là final tables cho end users.
+    # - Business-ready data
+    # - Optimized cho queries
+    # - Documented thoroughly
+    #
+    # Trong project này, marts sẽ được export sang StarRocks.
+    # =========================================================================
+    marts:
+      +materialized: table  # Full refresh mỗi run
+      +schema: analytics
+      +tags: ['marts', 'daily']
+
+      # Core marts: Fact và Dimension tables
+      core:
+        +tags: ['core']
+
+      # Marketing marts: Attribution, campaigns
+      marketing:
+        +tags: ['marketing']
+
+      # Product marts: Product performance
+      product:
+        +tags: ['product']
+
+      # Finance marts: Revenue, margins
+      finance:
+        +tags: ['finance']
+
+# =============================================================================
+# SEEDS CONFIGURATION
+# =============================================================================
+# Seeds là static data files (CSV).
+# Dùng cho lookup tables, configuration data.
+# =============================================================================
+
+seeds:
+  dropshipping_analytics:
+    +schema: seeds
+    # Định nghĩa data types cho columns
+    +column_types:
+      country_code: varchar(2)
+      country_name: varchar(100)
+
+# =============================================================================
+# TESTS CONFIGURATION
+# =============================================================================
+# Data quality tests.
+# Có thể fail (error), warn, hoặc skip.
+# =============================================================================
+
+tests:
+  dropshipping_analytics:
+    +severity: warn  # Default: warn instead of fail
+    +tags: ['data_quality']
+
+# =============================================================================
+# SNAPSHOTS CONFIGURATION
+# =============================================================================
+# Snapshots track changes to data over time.
+# Useful cho slowly changing dimensions (SCD Type 2).
+# =============================================================================
+
+snapshots:
+  dropshipping_analytics:
+    +target_schema: snapshots
+
+# =============================================================================
+# VARIABLES
+# =============================================================================
+# Global variables accessible in models.
+# Có thể override từ command line: dbt run --vars '{"key": "value"}'
+# =============================================================================
+
+vars:
+  # Date range cho processing
+  # Trong production, override từ Airflow
+  start_date: '2024-01-01'
+  end_date: '2024-12-31'
+
+  # Business constants
+  default_currency: 'USD'
+  cents_to_dollars: 100
+
+  # Dropshipping specific
+  # Minimum margin threshold (10%)
+  min_margin_threshold: 0.10
+
+  # High value order threshold ($100)
+  high_value_order_cents: 10000
+
+# =============================================================================
+# ON-RUN-START / ON-RUN-END
+# =============================================================================
+# Hooks để run SQL trước/sau dbt run.
+# Useful cho logging, cleanup, etc.
+# =============================================================================
+
+on-run-start:
+  - "{{ log('Starting dbt run at ' ~ modules.datetime.datetime.now(), info=True) }}"
+
+on-run-end:
+  - "{{ log('Completed dbt run', info=True) }}"

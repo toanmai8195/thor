@@ -1,0 +1,24 @@
+starrocks_gold:
+  target: dev
+  outputs:
+    dev:
+      type: starrocks
+      host: "{{ env_var('STARROCKS_HOST', 'localhost') }}"
+      port: 9030               # MySQL protocol port
+      database: analytics
+      schema: analytics
+      username: root
+      password: ""
+      threads: 4
+      connect_timeout: 10
+
+    prod:
+      type: starrocks
+      host: "{{ env_var('STARROCKS_HOST') }}"
+      port: "{{ env_var('STARROCKS_MYSQL_PORT', '9030') | int }}"
+      database: analytics
+      schema: analytics
+      username: "{{ env_var('STARROCKS_USER') }}"
+      password: "{{ env_var('STARROCKS_PASSWORD') }}"
+      threads: 8
+      connect_timeout: 10

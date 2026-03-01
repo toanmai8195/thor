@@ -1,0 +1,39 @@
+# =============================================================================
+# ROOT BUILD FILE
+# =============================================================================
+# File này chứa targets cho root package và project-wide configurations.
+#
+# CÁCH DÙNG:
+#
+# 1. Build services:
+#    bazel build //com/tm/src/services/event-producer:event-producer
+#    bazel build //com/tm/src/services/tracking-ingestor:tracking-ingestor
+#
+# 2. Run service:
+#    bazel run //com/tm/src/services/event-producer:event-producer
+#
+# 3. Update dependencies (with bzlmod):
+#    go mod tidy
+#    # Dependencies are automatically resolved from go.mod via gazelle extension
+#
+# 4. Clean:
+#    bazel clean
+# =============================================================================
+
+load("@gazelle//:def.bzl", "gazelle")
+
+# =============================================================================
+# GAZELLE
+# =============================================================================
+# Gazelle tự động generate BUILD files cho Go projects.
+#
+# Cách dùng:
+# - bazel run //:gazelle          # Generate/update BUILD files
+# - bazel run //:gazelle -- fix   # Fix and update
+#
+# LƯU Ý: Với bzlmod (Bazel 6+), dependencies được quản lý qua go.mod
+# và go_deps extension trong MODULE.bazel, không cần gazelle-update-repos
+# =============================================================================
+
+# gazelle:prefix thor
+gazelle(name = "gazelle")
