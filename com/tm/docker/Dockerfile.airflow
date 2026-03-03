@@ -1,0 +1,6 @@
+FROM apache/airflow:2.8.0-python3.11
+
+# dbt adapters dùng bởi DAGs (silver_ingest_dag, medallion_pipeline_dag)
+RUN pip install --no-cache-dir \
+    dbt-clickhouse==1.10.0 \
+    dbt-starrocks

@@ -60,9 +60,16 @@ WHERE
     AND payment_date IS NOT NULL
 
 {% if is_incremental() %}
-    -- Incremental: chỉ xử lý data mới (1 ngày overlap để catch late-arriving)
+    -- Incremental: chỉ xử lý data mới (1 ngày overlap để catch late-arriving).
+    -- Không dùng coalesce vì ClickHouse Date là UInt16: max() từ table rỗng = 1970-01-01
+    -- → 1970-01-01 - 1 day = UInt16 overflow = ngày 2149 → filter out toàn bộ data.
+    -- Fix: check count() > 0 trước khi dùng max().
     AND payment_date >= (
-        SELECT max(payment_date) - INTERVAL 1 DAY
+        SELECT if(
+            count() > 0,
+            max(payment_date) - INTERVAL 1 DAY,
+            toDate('1970-01-01')
+        )
         FROM {{ this }}
     )
 {% endif %}

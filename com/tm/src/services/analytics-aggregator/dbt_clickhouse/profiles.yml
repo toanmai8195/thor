@@ -6,12 +6,12 @@ clickhouse_silver:
     # ==========================================================================
     dev:
       type: clickhouse
-      schema: tracking          # ClickHouse database name
+      schema: tracking          # ClickHouse database name (đây là "database" trong CH)
       host: "{{ env_var('CLICKHOUSE_HOST', 'localhost') }}"
       port: 8123               # HTTP interface (dbt-clickhouse dùng HTTP)
       user: "{{ env_var('CLICKHOUSE_USER', 'default') }}"
       password: "{{ env_var('CLICKHOUSE_PASSWORD', '') }}"
-      database: tracking
+      # Không set `database` riêng: dbt-clickhouse sẽ ghép schema+database → "tracking_tracking"
       secure: false
       threads: 4
       connect_timeout: 10
@@ -32,7 +32,6 @@ clickhouse_silver:
       port: "{{ env_var('CLICKHOUSE_HTTP_PORT', '8123') | int }}"
       user: "{{ env_var('CLICKHOUSE_USER') }}"
       password: "{{ env_var('CLICKHOUSE_PASSWORD') }}"
-      database: tracking
       secure: true
       threads: 8
       connect_timeout: 10

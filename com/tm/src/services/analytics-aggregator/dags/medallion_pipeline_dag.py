@@ -80,7 +80,6 @@ with DAG(
             task_id="dbt_ch_run",
             bash_command="""
             cd /opt/analytics/dbt_clickhouse
-            pip install dbt-clickhouse --quiet
             dbt deps --profiles-dir . && dbt run --profiles-dir . --target dev
             """,
             env=CH_ENV,
@@ -115,7 +114,6 @@ with DAG(
             task_id="dbt_sr_run",
             bash_command="""
             cd /opt/analytics/dbt_starrocks
-            pip install dbt-starrocks --quiet
             dbt deps --profiles-dir . && dbt run --profiles-dir . --target dev
             """,
             env=SR_ENV,

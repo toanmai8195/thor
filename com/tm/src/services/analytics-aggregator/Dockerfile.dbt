@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir dbt-clickhouse==1.10.0
+
+WORKDIR /usr/app
+
+ENTRYPOINT ["dbt"]

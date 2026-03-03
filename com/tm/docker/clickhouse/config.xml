@@ -34,22 +34,18 @@ Các settings quan trọng:
     - Insert data vào tables thông qua Materialized Views
     ==========================================================================
     -->
+    <!--
+    CH 26.x + librdkafka 2.x: XML tags trong <kafka> được pass trực tiếp
+    xuống librdkafka dưới dạng property name (underscore → dot).
+    Chỉ dùng đúng tên librdkafka property. Các setting per-table
+    (broker, group, num_consumers, max_block_size...) đặt trong CREATE TABLE.
+
+    Valid librdkafka consumer properties:
+      https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
+    -->
     <kafka>
-        <!-- Kafka broker address (trong docker network) -->
-        <broker_list>kafka:29092</broker_list>
-
-        <!-- Consumer settings -->
-        <!-- auto.offset.reset: earliest = đọc từ đầu, latest = chỉ đọc messages mới -->
+        <!-- auto.offset.reset: valid librdkafka property -->
         <auto_offset_reset>earliest</auto_offset_reset>
-
-        <!-- Số messages tối đa consume trong 1 poll -->
-        <max_poll_records>10000</max_poll_records>
-
-        <!-- Timeout cho poll (ms) -->
-        <poll_timeout_ms>1000</poll_timeout_ms>
-
-        <!-- Consumer group prefix -->
-        <group_name>clickhouse</group_name>
     </kafka>
 
     <!--
@@ -58,15 +54,6 @@ Các settings quan trọng:
     Tối ưu performance cho analytics queries
     ==========================================================================
     -->
-    <!-- Số threads cho SELECT queries -->
-    <max_threads>8</max_threads>
-
-    <!-- Memory limit cho single query (10GB) -->
-    <max_memory_usage>10737418240</max_memory_usage>
-
-    <!-- Cho phép introspection functions (để debug) -->
-    <allow_introspection_functions>1</allow_introspection_functions>
-
     <!--
     ==========================================================================
     MERGE TREE SETTINGS
@@ -85,8 +72,7 @@ Các settings quan trọng:
         <!-- Số parts tối đa trước khi throw exception -->
         <parts_to_throw_insert>300</parts_to_throw_insert>
 
-        <!-- Background pool size cho merges -->
-        <background_pool_size>16</background_pool_size>
+        <!-- background_pool_size đã bị remove từ CH 23+, CH tự quản lý -->
     </merge_tree>
 
     <!--

@@ -30,14 +30,18 @@ build --show_progress
 build --spawn_strategy=sandboxed
 
 # =============================================================================
-# MACOS SPECIFIC - FIX XCODE ISSUES WITH BAZEL 9
-# =============================================================================
-# Bazel 9 có breaking changes với xcode config trên macOS.
-# Workaround: Disable xcode config check
+# MACOS SPECIFIC
 # =============================================================================
 
 # Không require xcode
 build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# rules_oci: CopyToDirectory không chạy được trong darwin-sandbox
+# → cho phép action này chạy local (không sandbox)
+build --strategy=CopyToDirectory=local
+
+# rules_oci: tránh đọc Docker credentials từ ~/.docker/config.json
+build --repo_env=DOCKER_CONFIG=/dev/null
 
 # Sử dụng Go compiler pure mode (không cần CGO)
 build --@rules_go//go/config:pure

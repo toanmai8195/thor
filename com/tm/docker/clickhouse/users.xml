@@ -102,6 +102,9 @@ Trong production, bạn cần:
 
             <!-- Load balancing cho distributed queries -->
             <load_balancing>random</load_balancing>
+
+            <!-- Cho phép introspection functions (stacktrace, addressToLine) để debug -->
+            <allow_introspection_functions>1</allow_introspection_functions>
         </default>
 
         <analytics>

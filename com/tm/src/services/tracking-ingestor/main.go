@@ -1,19 +1,21 @@
 // =============================================================================
-// TRACKING INGESTOR - Payment Events
+// TRACKING INGESTOR - Payment Event Processor
 // =============================================================================
-// Consume payment events từ Kafka → batch insert vào ClickHouse Bronze.
+// Consume payment events từ Kafka → validate JSON → forward tới topic riêng
+// để ClickHouse Kafka Engine tự ingest vào payments_bronze.
 //
 // Flow:
-//   Kafka "payment-events" → ConsumerGroup → BatchProcessor → payments_bronze
+//   event-producer → "payment-events"
+//        → [tracking-ingestor] validate + forward
+//        → "payment-events-ingest"
+//        → CH Kafka Engine (payments_kafka)
+//        → Materialized View (payments_bronze_mv)
+//        → payments_bronze (MergeTree)
 //
-// Kafka concepts:
-//   ConsumerGroup: nhiều consumers chia nhau partitions
-//   Offset: vị trí message trong partition (auto-commit mỗi 5s)
-//   Backpressure: nếu ClickHouse chậm → channel đầy → drop + log warning
-//
-// ClickHouse BatchInsert:
-//   PrepareBatch → Append rows → Send()
-//   Tối ưu: gom 10_000 rows thành 1 INSERT thay vì insert từng row
+// Lý do có Go service ở giữa thay vì CH đọc "payment-events" thẳng:
+//   - Validate schema trước khi vào CH (tránh CH ghi rác)
+//   - Tách consumer group: ingestor có thể retry độc lập
+//   - Dễ thêm transform/enrichment sau này
 // =============================================================================
 
 package main
@@ -31,7 +33,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/IBM/sarama"
 )
 
@@ -40,41 +41,23 @@ import (
 // =============================================================================
 
 type Config struct {
-	KafkaBrokers    []string
-	KafkaTopic      string
-	ConsumerGroup   string
-	ClickHouseHost  string
-	ClickHousePort  int
-	ClickHouseDB    string
-	ClickHouseTable string
-	BatchSize       int
-	BatchTimeout    time.Duration
-	NumWorkers      int
-	ChannelBuffer   int
-	MaxRetries      int
-	RetryBackoff    time.Duration
+	KafkaBrokers  []string
+	InputTopic    string // "payment-events" - từ event-producer
+	OutputTopic   string // "payment-events-ingest" - CH Kafka Engine đọc topic này
+	ConsumerGroup string
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		KafkaBrokers:    []string{"localhost:9092"},
-		KafkaTopic:      "payment-events",
-		ConsumerGroup:   "payment-ingestor",
-		ClickHouseHost:  "localhost",
-		ClickHousePort:  9000,
-		ClickHouseDB:    "tracking",
-		ClickHouseTable: "payments_bronze", // Bronze layer trong Medallion Architecture
-		BatchSize:       10_000,
-		BatchTimeout:    5 * time.Second,
-		NumWorkers:      4,
-		ChannelBuffer:   100_000,
-		MaxRetries:      3,
-		RetryBackoff:    time.Second,
+		KafkaBrokers:  []string{"localhost:9092"},
+		InputTopic:    "payment-events",
+		OutputTopic:   "payment-events-ingest",
+		ConsumerGroup: "payment-ingestor",
 	}
 }
 
 // =============================================================================
-// PAYMENT EVENT (schema 6 fields - khớp với producer)
+// PAYMENT EVENT (schema 6 fields - khớp với event-producer)
 // =============================================================================
 
 type PaymentEvent struct {
@@ -87,216 +70,15 @@ type PaymentEvent struct {
 }
 
 // =============================================================================
-// CLICKHOUSE CLIENT
-// =============================================================================
-
-type ClickHouseClient struct {
-	conn   clickhouse.Conn
-	cfg    *Config
-	mu     sync.Mutex
-	closed bool
-}
-
-func NewClickHouseClient(cfg *Config) (*ClickHouseClient, error) {
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{fmt.Sprintf("%s:%d", cfg.ClickHouseHost, cfg.ClickHousePort)},
-		Auth: clickhouse.Auth{
-			Database: cfg.ClickHouseDB,
-			Username: "default",
-			Password: "",
-		},
-		Settings: clickhouse.Settings{
-			"max_execution_time":    60,
-			"max_insert_block_size": 100_000,
-		},
-		Compression: &clickhouse.Compression{
-			Method: clickhouse.CompressionLZ4,
-		},
-		MaxOpenConns:    10,
-		MaxIdleConns:    5,
-		ConnMaxLifetime: 10 * time.Minute,
-		DialTimeout:     10 * time.Second,
-		ReadTimeout:     30 * time.Second,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("clickhouse.Open: %w", err)
-	}
-	if err := conn.Ping(context.Background()); err != nil {
-		return nil, fmt.Errorf("clickhouse.Ping: %w", err)
-	}
-	return &ClickHouseClient{conn: conn, cfg: cfg}, nil
-}
-
-// BatchInsert ghi batch events vào payments_bronze (chỉ 6 columns)
-func (c *ClickHouseClient) BatchInsert(ctx context.Context, events []*PaymentEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
-
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return fmt.Errorf("client is closed")
-	}
-	c.mu.Unlock()
-
-	// 6 columns khớp với schema payments_bronze
-	batch, err := c.conn.PrepareBatch(ctx, fmt.Sprintf(
-		`INSERT INTO %s.%s (event_id, user_id, amount, status, payment_date, updated_at)`,
-		c.cfg.ClickHouseDB, c.cfg.ClickHouseTable,
-	))
-	if err != nil {
-		return fmt.Errorf("PrepareBatch: %w", err)
-	}
-
-	for _, e := range events {
-		// Parse payment_date: "2024-01-15" → time.Time
-		payDate, err := time.Parse("2006-01-02", e.PaymentDate)
-		if err != nil {
-			payDate = time.Now()
-		}
-
-		// Parse updated_at: ISO8601 → time.Time
-		updatedAt, err := time.Parse(time.RFC3339Nano, e.UpdatedAt)
-		if err != nil {
-			updatedAt = time.Now()
-		}
-
-		if err := batch.Append(
-			e.EventID,
-			e.UserID,
-			e.Amount,
-			e.Status,
-			payDate,
-			updatedAt,
-		); err != nil {
-			return fmt.Errorf("batch.Append: %w", err)
-		}
-	}
-
-	return batch.Send()
-}
-
-func (c *ClickHouseClient) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	return c.conn.Close()
-}
-
-// =============================================================================
-// BATCH PROCESSOR
-// =============================================================================
-
-type BatchProcessor struct {
-	cfg       *Config
-	client    *ClickHouseClient
-	eventChan chan *PaymentEvent
-	wg        sync.WaitGroup
-	ctx       context.Context
-	cancel    context.CancelFunc
-	processed int64
-	inserted  int64
-	failed    int64
-}
-
-func NewBatchProcessor(cfg *Config, client *ClickHouseClient) *BatchProcessor {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &BatchProcessor{
-		cfg:       cfg,
-		client:    client,
-		eventChan: make(chan *PaymentEvent, cfg.ChannelBuffer),
-		ctx:       ctx,
-		cancel:    cancel,
-	}
-}
-
-func (bp *BatchProcessor) Start() {
-	for i := 0; i < bp.cfg.NumWorkers; i++ {
-		bp.wg.Add(1)
-		go bp.worker(i)
-	}
-}
-
-func (bp *BatchProcessor) worker(id int) {
-	defer bp.wg.Done()
-
-	batch := make([]*PaymentEvent, 0, bp.cfg.BatchSize)
-	ticker := time.NewTicker(bp.cfg.BatchTimeout)
-	defer ticker.Stop()
-
-	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		toInsert := make([]*PaymentEvent, len(batch))
-		copy(toInsert, batch)
-		batch = batch[:0]
-
-		var err error
-		for attempt := 0; attempt <= bp.cfg.MaxRetries; attempt++ {
-			if attempt > 0 {
-				time.Sleep(bp.cfg.RetryBackoff * time.Duration(attempt))
-			}
-			err = bp.client.BatchInsert(bp.ctx, toInsert)
-			if err == nil {
-				atomic.AddInt64(&bp.inserted, int64(len(toInsert)))
-				return
-			}
-		}
-		atomic.AddInt64(&bp.failed, int64(len(toInsert)))
-		log.Printf("[worker-%d] insert failed after %d retries: %v", id, bp.cfg.MaxRetries, err)
-	}
-
-	for {
-		select {
-		case <-bp.ctx.Done():
-			flush()
-			return
-		case event := <-bp.eventChan:
-			atomic.AddInt64(&bp.processed, 1)
-			batch = append(batch, event)
-			if len(batch) >= bp.cfg.BatchSize {
-				flush()
-				ticker.Reset(bp.cfg.BatchTimeout)
-			}
-		case <-ticker.C:
-			flush()
-		}
-	}
-}
-
-func (bp *BatchProcessor) Process(event *PaymentEvent) {
-	select {
-	case bp.eventChan <- event:
-	default:
-		log.Printf("Warning: channel full, dropping event")
-		atomic.AddInt64(&bp.failed, 1)
-	}
-}
-
-func (bp *BatchProcessor) Stop() {
-	bp.cancel()
-	bp.wg.Wait()
-}
-
-func (bp *BatchProcessor) Stats() (processed, inserted, failed int64) {
-	return atomic.LoadInt64(&bp.processed),
-		atomic.LoadInt64(&bp.inserted),
-		atomic.LoadInt64(&bp.failed)
-}
-
-// =============================================================================
 // KAFKA CONSUMER GROUP HANDLER
 // =============================================================================
 
 type Handler struct {
-	processor *BatchProcessor
+	producer  sarama.SyncProducer
+	cfg       *Config
 	ready     chan bool
 	consumed  int64
+	forwarded int64
 	parseErr  int64
 }
 
@@ -311,6 +93,8 @@ func (h *Handler) Cleanup(s sarama.ConsumerGroupSession) error {
 	return nil
 }
 
+// ConsumeClaim: validate JSON → forward raw bytes tới OutputTopic.
+// Chỉ mark offset sau khi produce thành công để tránh mất event.
 func (h *Handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
@@ -318,18 +102,36 @@ func (h *Handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama
 			if !ok {
 				return nil
 			}
+			atomic.AddInt64(&h.consumed, 1)
 
+			// Validate JSON: đảm bảo CH không nhận message rác
 			var event PaymentEvent
 			if err := json.Unmarshal(msg.Value, &event); err != nil {
 				atomic.AddInt64(&h.parseErr, 1)
 				log.Printf("parse error partition=%d offset=%d: %v",
 					msg.Partition, msg.Offset, err)
+				// Vẫn mark để không bị stuck; message lỗi bị drop
 				session.MarkMessage(msg, "")
 				continue
 			}
 
-			h.processor.Process(&event)
-			atomic.AddInt64(&h.consumed, 1)
+			fmt.Println(event)
+
+			// Forward raw bytes (không re-serialize để giữ nguyên format)
+			// Key = event_id → routing nhất quán theo partition
+			outMsg := &sarama.ProducerMessage{
+				Topic: h.cfg.OutputTopic,
+				Key:   sarama.StringEncoder(event.EventID),
+				Value: sarama.ByteEncoder(msg.Value),
+			}
+			if _, _, err := h.producer.SendMessage(outMsg); err != nil {
+				// Không mark offset → reprocess khi restart
+				log.Printf("produce error partition=%d offset=%d: %v",
+					msg.Partition, msg.Offset, err)
+				continue
+			}
+
+			atomic.AddInt64(&h.forwarded, 1)
 			session.MarkMessage(msg, "")
 
 		case <-session.Context().Done():
@@ -346,51 +148,58 @@ func main() {
 	cfg := DefaultConfig()
 
 	kafkaBroker := flag.String("kafka", "localhost:9092", "Kafka broker")
-	flag.StringVar(&cfg.KafkaTopic, "topic", cfg.KafkaTopic, "Kafka topic")
+	flag.StringVar(&cfg.InputTopic, "input-topic", cfg.InputTopic, "Input topic (from event-producer)")
+	flag.StringVar(&cfg.OutputTopic, "output-topic", cfg.OutputTopic, "Output topic (to CH Kafka Engine)")
 	flag.StringVar(&cfg.ConsumerGroup, "group", cfg.ConsumerGroup, "Consumer group")
-	flag.StringVar(&cfg.ClickHouseHost, "ch-host", cfg.ClickHouseHost, "ClickHouse host")
-	flag.IntVar(&cfg.ClickHousePort, "ch-port", cfg.ClickHousePort, "ClickHouse port")
-	flag.IntVar(&cfg.BatchSize, "batch-size", cfg.BatchSize, "Batch size")
 	flag.Parse()
 
 	cfg.KafkaBrokers = []string{*kafkaBroker}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	log.Printf("Payment Ingestor starting | topic=%s group=%s ch=%s:%d batch=%d",
-		cfg.KafkaTopic, cfg.ConsumerGroup, cfg.ClickHouseHost, cfg.ClickHousePort, cfg.BatchSize)
+	log.Printf("Payment Ingestor | %s → %s | group=%s",
+		cfg.InputTopic, cfg.OutputTopic, cfg.ConsumerGroup)
 
-	// Connect ClickHouse
-	chClient, err := NewClickHouseClient(cfg)
+	// ---------------------------------------------------------------------------
+	// Kafka Producer (forward validated events → OutputTopic cho CH Kafka Engine)
+	// ---------------------------------------------------------------------------
+	prodCfg := sarama.NewConfig()
+	prodCfg.Producer.Return.Successes = true
+	prodCfg.Producer.RequiredAcks = sarama.WaitForLocal
+	prodCfg.Producer.Compression = sarama.CompressionLZ4
+
+	producer, err := sarama.NewSyncProducer(cfg.KafkaBrokers, prodCfg)
 	if err != nil {
-		log.Fatalf("ClickHouse connect: %v", err)
+		log.Fatalf("SyncProducer: %v", err)
 	}
-	defer chClient.Close()
-	log.Printf("ClickHouse OK → %s.%s", cfg.ClickHouseDB, cfg.ClickHouseTable)
+	defer producer.Close()
+	log.Printf("Kafka producer OK → %s", cfg.OutputTopic)
 
-	// Batch processor
-	processor := NewBatchProcessor(cfg, chClient)
-	processor.Start()
-	defer processor.Stop()
-
-	// Kafka consumer group
-	saramaCfg := sarama.NewConfig()
-	saramaCfg.Consumer.Return.Errors = true
-	saramaCfg.Consumer.Offsets.Initial = sarama.OffsetOldest
-	saramaCfg.Consumer.Offsets.AutoCommit.Enable = true
-	saramaCfg.Consumer.Offsets.AutoCommit.Interval = 5 * time.Second
-	saramaCfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
+	// ---------------------------------------------------------------------------
+	// Kafka Consumer Group (đọc từ InputTopic)
+	// ---------------------------------------------------------------------------
+	consCfg := sarama.NewConfig()
+	consCfg.Consumer.Return.Errors = true
+	consCfg.Consumer.Offsets.Initial = sarama.OffsetOldest
+	consCfg.Consumer.Offsets.AutoCommit.Enable = true
+	consCfg.Consumer.Offsets.AutoCommit.Interval = 5 * time.Second
+	consCfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
 		sarama.NewBalanceStrategySticky(),
 	}
-	saramaCfg.Consumer.Group.Session.Timeout = 30 * time.Second
-	saramaCfg.Consumer.Group.Heartbeat.Interval = 10 * time.Second
+	consCfg.Consumer.Group.Session.Timeout = 30 * time.Second
+	consCfg.Consumer.Group.Heartbeat.Interval = 10 * time.Second
 
-	cg, err := sarama.NewConsumerGroup(cfg.KafkaBrokers, cfg.ConsumerGroup, saramaCfg)
+	cg, err := sarama.NewConsumerGroup(cfg.KafkaBrokers, cfg.ConsumerGroup, consCfg)
 	if err != nil {
 		log.Fatalf("ConsumerGroup: %v", err)
 	}
 	defer cg.Close()
 
-	handler := &Handler{processor: processor, ready: make(chan bool)}
+	handler := &Handler{
+		producer: producer,
+		cfg:      cfg,
+		ready:    make(chan bool),
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -408,17 +217,22 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				p, ins, fail := processor.Stats()
-				log.Printf("Stats: consumed=%d processed=%d inserted=%d failed=%d",
-					atomic.LoadInt64(&handler.consumed), p, ins, fail)
+				log.Printf("Stats: consumed=%d forwarded=%d parse_err=%d",
+					atomic.LoadInt64(&handler.consumed),
+					atomic.LoadInt64(&handler.forwarded),
+					atomic.LoadInt64(&handler.parseErr),
+				)
 			}
 		}
 	}()
 
 	// Consume loop
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
-			if err := cg.Consume(ctx, []string{cfg.KafkaTopic}, handler); err != nil {
+			if err := cg.Consume(ctx, []string{cfg.InputTopic}, handler); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -432,15 +246,18 @@ func main() {
 	}()
 
 	<-handler.ready
-	log.Printf("Ready, consuming payment events...")
+	log.Printf("Ready, consuming from %s...", cfg.InputTopic)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigChan
 	log.Printf("Signal %v, shutting down...", sig)
 	cancel()
+	wg.Wait()
 
-	p, ins, fail := processor.Stats()
-	log.Printf("Final: consumed=%d inserted=%d failed=%d",
-		atomic.LoadInt64(&handler.consumed), ins, fail-p+ins)
+	log.Printf("Final: consumed=%d forwarded=%d parse_err=%d",
+		atomic.LoadInt64(&handler.consumed),
+		atomic.LoadInt64(&handler.forwarded),
+		atomic.LoadInt64(&handler.parseErr),
+	)
 }

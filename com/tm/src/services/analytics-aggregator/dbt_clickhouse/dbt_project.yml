@@ -33,20 +33,26 @@ models:
     silver:
       +materialized: incremental
       +incremental_strategy: append
-      +on_schema_change: append_new_columns
+      # append_new_columns yêu cầu dbt chạy SELECT * FROM (compiled_sql) LIMIT 0
+      # để so sánh schema → ClickHouse 26.x new analyzer không resolve
+      # database.table trong subquery context → UNKNOWN_TABLE
+      # ignore: bỏ qua schema diff, chỉ INSERT (safe vì schema payments không đổi)
+      +on_schema_change: ignore
 
       silver_events:
-        +schema: tracking
+        # Không set +schema: profile đã set schema: tracking
+        # Nếu set +schema: tracking → dbt ghép thành tracking_tracking (sai)
         +engine: "ReplacingMergeTree()"
-        +order_by: "['event_date', 'event_type', 'user_id', 'event_id']"
+        # Columns thực tế trong model: event_id, user_id, amount, status, payment_date, updated_at
+        # event_date và event_type không tồn tại → phải dùng payment_date
+        +order_by: "['payment_date', 'user_id', 'event_id']"
         +unique_key: event_id
         +partition_by:
-          field: event_date
+          field: payment_date
           data_type: date
           granularity: month
 
       silver_sessions:
-        +schema: tracking
         +engine: "AggregatingMergeTree()"
         +order_by: "['session_date', 'session_id']"
         +unique_key: session_id
@@ -57,6 +63,5 @@ models:
 
       silver_users:
         +materialized: table    # Full refresh - user dim
-        +schema: tracking
         +engine: "ReplacingMergeTree(updated_at)"
         +order_by: "['user_id']"
