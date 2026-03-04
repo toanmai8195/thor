@@ -303,3 +303,43 @@ services:
       - airflow-logs:/opt/airflow/logs
     command: scheduler
     restart: unless-stopped
+
+  # ===========================================================================
+  # SUPERSET - BI Dashboard
+  # Visualize silver_events từ ClickHouse
+  #
+  # Lần đầu chạy:
+  #   docker compose up superset --build
+  # Sau khi init xong, truy cập http://localhost:8088
+  #   Login: admin / admin
+  #
+  # Thêm ClickHouse database:
+  #   Settings → Database Connections → + →
+  #   SQLAlchemy URI: clickhousedb://default:@clickhouse:8123/tracking
+  # ===========================================================================
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    container_name: superset
+    hostname: superset
+    networks:
+      - tracking-network
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "8162d0aaf944ec51fe797903d02eb653ee605b0ef0d9f887c7bb6574ba8b425e"
+    volumes:
+      - superset-home:/app/superset_home
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        superset db upgrade &&
+        superset fab create-admin --username admin --firstname Admin --lastname Admin --email admin@superset.com --password admin || true &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088 --with-threads
+    restart: unless-stopped

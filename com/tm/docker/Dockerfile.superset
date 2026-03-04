@@ -1,0 +1,7 @@
+FROM apache/superset:latest
+
+USER root
+# Superset venv tại /app/.venv không có pip riêng
+# Dùng --prefix để cài thẳng vào venv site-packages
+RUN pip3 install --no-cache-dir --prefix=/app/.venv clickhouse-connect
+USER superset
