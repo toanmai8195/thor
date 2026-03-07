@@ -1,0 +1,40 @@
+FROM flink:1.18-scala_2.12-java11
+
+# =============================================================================
+# FLINK + CONNECTORS (DW Pipeline: Kafka → Iceberg → StarRocks)
+# =============================================================================
+# 1. flink-sql-connector-kafka      → đọc từ "payment-events-ingest"
+# 2. iceberg-flink-runtime-1.18     → ghi vào Apache Iceberg (Parquet on MinIO)
+# 3. hadoop-client-api/runtime      → Hadoop API classes cho HadoopCatalog
+# 4. hadoop-aws + aws-java-sdk-bundle → S3AFileSystem trong main classloader
+#    (Iceberg dùng Hadoop FileSystem registry — cần S3AFileSystem unshaded trong lib,
+#     flink-s3-fs-hadoop plugin bị isolated nên không accessible)
+# 5. commons-logging                → excluded khỏi shading của hadoop-client-runtime
+# =============================================================================
+
+# Kafka connector (SQL unified, supports both source + sink)
+RUN wget -q -P /opt/flink/lib \
+    "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.2.0-1.18/flink-sql-connector-kafka-3.2.0-1.18.jar"
+
+# Iceberg Flink runtime (fat JAR: iceberg-core + flink-catalog + iceberg-data)
+RUN wget -q -P /opt/flink/lib \
+    "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-flink-runtime-1.18/1.6.1/iceberg-flink-runtime-1.18-1.6.1.jar"
+
+# Hadoop API + runtime (cho HadoopCatalog Configuration, FileSystem, Path, ...)
+RUN wget -q -P /opt/flink/lib \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-api/3.3.6/hadoop-client-api-3.3.6.jar" \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-runtime/3.3.6/hadoop-client-runtime-3.3.6.jar" \
+    "https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar"
+
+# hadoop-aws + AWS SDK — cung cấp S3AFileSystem trong Hadoop FileSystem registry
+# (Iceberg HadoopCatalog dùng Hadoop FileSystem.get("s3a://...") — cần unshaded trong lib)
+RUN wget -q -P /opt/flink/lib \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.6/hadoop-aws-3.3.6.jar" \
+    "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.367/aws-java-sdk-bundle-1.12.367.jar"
+
+# core-site.xml: S3A global config (endpoint, path-style, credentials)
+# HADOOP_CONF_DIR → Hadoop tự load core-site.xml → S3AFileSystem dùng đúng MinIO endpoint
+COPY hadoop/core-site.xml /opt/hadoop-conf/core-site.xml
+ENV HADOOP_CONF_DIR=/opt/hadoop-conf
+
+RUN ls -lh /opt/flink/lib/*.jar | grep -E "kafka|iceberg|hadoop|aws"

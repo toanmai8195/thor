@@ -1,0 +1,292 @@
+# =============================================================================
+# DOCKER COMPOSE — LUỒNG 2: WAREHOUSE DW (Iceberg + StarRocks)
+# =============================================================================
+#
+#   event-producer (~500 events/s)
+#           │ Kafka: payment-events
+#           ▼
+#   tracking-ingestor (validate JSON)
+#           │ Kafka: payment-events-ingest
+#           ▼
+#   Apache Flink (checkpoint 60s, exactly-once)
+#           ↓ Parquet files
+#   Apache Iceberg: bronze/payments
+#   (HadoopCatalog, s3a://lakehouse/warehouse/, MinIO)
+#           ↓ StarRocks external catalog (query-on-read)
+#   iceberg_catalog.bronze.payments     ← "SR Bronze"
+#           ↓ [future] dbt-starrocks
+#   tracking.silver_payments
+#           ↓ [future] dbt-starrocks
+#   analytics.gold_revenue
+#
+# =============================================================================
+# SERVICES:
+# 1. kafka, kafka-ui        — Event streaming
+# 2. event-producer         — Sinh 500 payment events/s
+# 3. tracking-ingestor      — Validate + forward → payment-events-ingest
+# 4. minio                  — S3-compatible object store (Iceberg data)
+# 5. starrocks              — MPP query engine: Iceberg ext catalog + Silver + Gold
+# 6. flink-jobmanager       — Flink cluster coordinator (Web UI port 8083)
+# 7. flink-taskmanager      — Flink worker (4 slots)
+# 8. flink-iceberg-job      — One-shot: submit Kafka→Iceberg SQL job
+#
+# NOTE: Init thủ công (bucket + catalog) — xem docs/dw/setup.md
+# =============================================================================
+
+version: '3.8'
+
+networks:
+  dw-network:
+    driver: bridge
+    name: dw-network
+
+volumes:
+  kafka-data:
+  minio-data:
+  starrocks-fe-meta:
+  starrocks-be-storage:
+
+services:
+  # ===========================================================================
+  # KAFKA
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:4.2.0
+    container_name: kafka
+    hostname: kafka
+    networks:
+      - dw-network
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 6
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    networks:
+      - dw-network
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: dw-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      - kafka
+
+  # ===========================================================================
+  # EVENT PRODUCER & TRACKING INGESTOR
+  # Build: bazel run //com/tm/src/services/<name>:<name>_docker
+  # ===========================================================================
+  event-producer:
+    image: com.tm.go.event-producer:v1.0.0
+    container_name: event-producer
+    hostname: event-producer
+    networks:
+      - dw-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-topic=payment-events"
+      - "-rate=500"
+    restart: unless-stopped
+
+  tracking-ingestor:
+    image: com.tm.go.tracking-ingestor:v1.0.0
+    container_name: tracking-ingestor
+    hostname: tracking-ingestor
+    networks:
+      - dw-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-input-topic=payment-events"
+      - "-output-topic=payment-events-ingest"
+      - "-group=payment-ingestor"
+    restart: unless-stopped
+
+  # ===========================================================================
+  # MINIO — S3-compatible object store
+  # Iceberg warehouse: s3a://lakehouse/warehouse/
+  # Console: http://localhost:9001  |  minioadmin / minioadmin
+  # Bucket "lakehouse" phải tạo thủ công — xem docs/dw/setup.md Bước 3
+  # ===========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    networks:
+      - dw-network
+    ports:
+      - "9000:9000"   # S3 API (Flink + StarRocks)
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ===========================================================================
+  # STARROCKS — DW query engine (allin1: FE + BE in one container)
+  # Iceberg ext catalog + Silver + Gold native tables
+  # MySQL: mysql -h 127.0.0.1 -P 9030 -u root
+  # Catalog + tables phải tạo thủ công — xem docs/dw/setup.md Bước 6
+  # ===========================================================================
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.2.7
+    container_name: starrocks
+    hostname: starrocks
+    networks:
+      - dw-network
+    ports:
+      - "9030:9030"   # MySQL protocol
+      - "8030:8030"   # FE HTTP
+      - "8040:8040"   # BE HTTP
+    environment:
+      # Native SR S3 client (AWS SDK v2) credential chain: EnvironmentVariableCredentialsProvider
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - starrocks-fe-meta:/opt/starrocks/fe/meta
+      - starrocks-be-storage:/opt/starrocks/be/storage
+      # S3A credentials cho Iceberg HadoopCatalog — mount vào cả FE + BE conf dir
+      # (StarRocks allin1: FE/BE đều ở /data/deploy/starrocks/{fe,be}/conf, CLASSPATH include conf/)
+      - ./hadoop/core-site.xml:/data/deploy/starrocks/fe/conf/core-site.xml:ro
+      - ./hadoop/core-site.xml:/data/deploy/starrocks/be/conf/core-site.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health 2>/dev/null | grep -q 'OK'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # FLINK — Kafka → Iceberg Bronze (streaming, checkpoint 60s)
+  # Job: ./flink/kafka_to_iceberg.sql
+  # Web UI: http://localhost:8083
+  # Build: docker compose build flink-jobmanager flink-taskmanager flink-iceberg-job
+  # Re-submit: docker compose up flink-iceberg-job
+  # ===========================================================================
+  flink-jobmanager:
+    build:
+      context: .
+      dockerfile: Dockerfile.flink
+    container_name: flink-jobmanager
+    hostname: flink-jobmanager
+    networks:
+      - dw-network
+    ports:
+      - "8083:8081"   # Flink Web UI
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1600m
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview 2>/dev/null | grep -q 'taskmanagers'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  flink-taskmanager:
+    build:
+      context: .
+      dockerfile: Dockerfile.flink
+    container_name: flink-taskmanager
+    hostname: flink-taskmanager
+    networks:
+      - dw-network
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 1728m
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot: submit Flink SQL job sau khi cluster + Kafka + MinIO sẵn sàng
+  flink-iceberg-job:
+    build:
+      context: .
+      dockerfile: Dockerfile.flink
+    container_name: flink-iceberg-job
+    networks:
+      - dw-network
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./flink:/opt/flink/jobs:ro
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        s3.endpoint: http://minio:9000
+        s3.path-style-access: true
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+      # S3AFileSystem credential chain fallback (EnvironmentVariableCredentialsProvider)
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    command:
+      - sh
+      - -c
+      - "/opt/flink/bin/sql-client.sh -f /opt/flink/jobs/kafka_to_iceberg.sql"
+    restart: on-failure

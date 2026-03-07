@@ -1,43 +1,70 @@
 # Payment Revenue Analytics Platform
 
-Hệ thống tracking thanh toán theo **Medallion Architecture**: Bronze → Silver → Gold.
+Hệ thống tracking thanh toán theo **Dual-Pipeline Medallion Architecture**.
 
 ```
-Event Producer → Kafka → Tracking Ingestor → Kafka → CH Kafka Engine
-                                                             ↓ MV
-                                                     payments_bronze (Bronze)
-                                                             ↓ dbt
-                                                     silver_payments (Silver)
-                                                             ↓ sync
-                                                     StarRocks → gold_revenue (Gold)
-                                                             ↓
-                                                         Superset
+                   event-producer (~500 events/s)
+                           │ Kafka: payment-events
+                           ▼
+                  tracking-ingestor (validate)       ← single validation gate
+                           │ Kafka: payment-events-ingest
+              ┌────────────┴──────────────┐
+              │                           │
+              ▼                           ▼
+   LUỒNG 1: REALTIME          LUỒNG 2: WAREHOUSE (DW)
+     (ClickHouse)                (Iceberg + StarRocks)
+              │                           │
+      CH Kafka Engine            Flink (checkpoint 60s)
+              │                           │
+    CH: payments_bronze         Iceberg: bronze/payments
+              │ dbt (1min)             (MinIO, Parquet)
+    CH: silver_events                    │
+              │                   SR Iceberg ext catalog
+         Superset                   = "SR Bronze"
+       (realtime)                        │ [future] dbt
+                                  SR: silver_payments
+                                         │ [future] dbt
+                                  SR: gold_revenue
 ```
+
+| | Luồng 1 (ClickHouse) | Luồng 2 (StarRocks) |
+|-|---------------------|---------------------|
+| Latency | ~1 phút | ~1 phút (Flink checkpoint) |
+| Dùng cho | Realtime monitoring | Historical analysis, BI, segmentation |
+| Bronze storage | ClickHouse MergeTree | Apache Iceberg / Parquet (MinIO) |
+| Silver transform | dbt-clickhouse (Airflow) | dbt-starrocks (future) |
+
+---
 
 ## Tài liệu
 
+### Luồng 1: Realtime (ClickHouse)
+
 | Doc | Nội dung |
 |-----|---------|
-| [architecture.md](architecture.md) | Flow dữ liệu, tech stack, chi tiết từng lớp, cấu trúc thư mục, glossary |
-| [data.md](data.md) | Schemas (Bronze/Silver/Gold), analytics queries, data quality queries |
-| [setup.md](setup.md) | Cài đặt, chạy services, service URLs, troubleshooting |
+| [realtime/architecture.md](realtime/architecture.md) | Flow, tech stack, CH Kafka Engine, dbt, Airflow |
+| [realtime/data.md](realtime/data.md) | Schemas (Bronze + Silver), analytics queries, data quality |
+| [realtime/setup.md](realtime/setup.md) | Manual setup, kiểm tra, troubleshooting |
+
+### Luồng 2: Warehouse DW (Iceberg + StarRocks)
+
+| Doc | Nội dung |
+|-----|---------|
+| [dw/architecture.md](dw/architecture.md) | Flow, tech stack, Flink, Iceberg, StarRocks ext catalog |
+| [dw/data.md](dw/data.md) | Schemas (Iceberg Bronze + SR Silver/Gold), analytics queries |
+| [dw/setup.md](dw/setup.md) | Manual setup, kiểm tra, troubleshooting |
+
+
+---
 
 ## Quick start
 
 ```bash
-# 1. Khởi động infrastructure
-cd com/tm/docker && docker compose up -d
+# Luồng 1: Realtime
+cd com/tm/docker/realtime && docker compose up -d
 
-# 2. Build
-bazel build //com/tm/src/services/...
-
-# 3. Chạy ingestor (validate Kafka events → forward cho CH)
-bazel run //com/tm/src/services/tracking-ingestor:tracking-ingestor -- \
-  --kafka=localhost:9092
-
-# 4. Chạy producer (sinh events)
-bazel run //com/tm/src/services/event-producer:event-producer -- \
-  --kafka=localhost:9092 --rate=1000
+# Luồng 2: Warehouse DW
+cd com/tm/docker/dw && docker compose up -d
 ```
 
-Xem [setup.md](setup.md) để biết thêm chi tiết.
+Xem [realtime/setup.md](realtime/setup.md) hoặc [dw/setup.md](dw/setup.md) để biết các bước chi tiết.
