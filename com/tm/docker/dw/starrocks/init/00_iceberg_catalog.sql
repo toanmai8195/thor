@@ -47,10 +47,10 @@ PROPERTIES (
 );
 
 -- =============================================================================
--- TRACKING DATABASE (Silver + Gold native SR tables — dbt target)
+-- TRACKING DATABASE (Silver layer — dbt_starrocks_silver target)
 -- =============================================================================
 CREATE DATABASE IF NOT EXISTS tracking
-COMMENT 'DW pipeline: Silver + Gold layers (populated by dbt from Iceberg Bronze)';
+COMMENT 'DW pipeline: Silver layer (populated by dbt_starrocks_silver from Iceberg Bronze)';
 
 USE tracking;
 
@@ -78,3 +78,12 @@ PROPERTIES (
     "dynamic_partition.end"       = "3",
     "dynamic_partition.prefix"    = "p"
 );
+
+-- =============================================================================
+-- ANALYTICS DATABASE (Gold layer — dbt_starrocks_gold target)
+-- =============================================================================
+-- Database phải tồn tại trước khi dbt chạy (dbt không tự CREATE DATABASE).
+-- Table gold_revenue sẽ do dbt tạo/replace trong mỗi lần run (materialized: table).
+-- =============================================================================
+CREATE DATABASE IF NOT EXISTS analytics
+COMMENT 'DW pipeline: Gold layer — pre-aggregated metrics (populated by dbt_starrocks_gold)';

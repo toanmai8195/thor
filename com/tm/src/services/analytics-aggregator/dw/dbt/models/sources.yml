@@ -2,12 +2,12 @@ version: 2
 
 sources:
   - name: silver
-    description: Silver layer synced từ ClickHouse
-    database: analytics
-    schema: analytics
+    description: Silver layer - tracking.silver_payments (StarRocks native, populated by dbt_starrocks_silver)
+    database: tracking
+    schema: tracking
     tables:
       - name: silver_payments
-        description: Cleaned payment events
+        description: Cleaned payment events từ Iceberg Bronze (normalized status/amount)
         columns:
           - name: event_id
             tests: [not_null]

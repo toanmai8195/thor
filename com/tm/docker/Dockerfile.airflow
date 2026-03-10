@@ -1,5 +1,12 @@
 FROM apache/airflow:2.8.0-python3.11
 
+USER root
+# mysql client: dùng bởi DW DAGs để check data trong StarRocks (MySQL protocol port 9030)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+USER airflow
 # dbt adapters dùng bởi DAGs (silver_ingest_dag, medallion_pipeline_dag)
 RUN pip install --no-cache-dir \
     dbt-clickhouse==1.10.0 \

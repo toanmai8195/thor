@@ -14,14 +14,14 @@ Apache Iceberg: bronze/payments
         │ StarRocks external catalog (query-on-read, no copy)
         ▼
 iceberg_catalog.bronze.payments         ← "SR Bronze"
-        │ [future] dbt-starrocks (Airflow)
+        │ dbt_starrocks_silver (Airflow, mỗi 15 phút)
         ▼
-tracking.silver_payments                ← SR native table
-        │ [future] dbt-starrocks (Airflow)
+tracking.silver_payments                ← SR native PRIMARY KEY table
+        │ dbt_starrocks_gold (Airflow, daily 02:00 UTC)
         ▼
 analytics.gold_revenue                  ← SR native table
         │
-Superset / Segment Engine
+Superset (http://localhost:8088)
 ```
 
 **Mục tiêu:** Historical analysis, BI dashboards, user segmentation — dữ liệu đầy đủ, chính xác hơn Realtime.
@@ -36,9 +36,10 @@ Superset / Segment Engine
 | Lake Format | Apache Iceberg | 1.6.1 | Open table format (Parquet, ACID, time-travel) |
 | Streaming Ingest | Apache Flink | 1.18 | Kafka → Iceberg Bronze (exactly-once) |
 | DW Query Engine | StarRocks (allin1) | 3.2.7 | Iceberg ext catalog + Silver + Gold (MPP) |
-| Transform (DW) | dbt-starrocks | — | SR Bronze → Silver → Gold [future] |
-| Orchestration | Apache Airflow | 2.8.0 | Schedule dbt DW [future] |
-| Visualization | Apache Superset | latest | DW BI dashboards [future] |
+| Transform Silver | dbt-starrocks (dbt_starrocks_silver) | — | Iceberg Bronze → `tracking.silver_payments` |
+| Transform Gold | dbt-starrocks (dbt_starrocks_gold) | — | Silver → `analytics.gold_revenue` |
+| Orchestration | Apache Airflow | 2.8.0 | `dw_silver_ingest` (*/15) + `dw_medallion_pipeline` (daily) |
+| Visualization | Apache Superset | latest | BI dashboard — StarRocks `analytics` DB |
 
 ---
 
@@ -96,11 +97,21 @@ PROPERTIES (
 `iceberg_catalog.bronze.payments` = SR Bronze — query trực tiếp Parquet files trên MinIO, **không copy data**.
 Chỉ có data sau khi Flink commit ít nhất 1 checkpoint (~60s đầu tiên).
 
-### StarRocks Silver + Gold (Future)
+### StarRocks Silver — `tracking.silver_payments`
 
-dbt_starrocks sẽ transform:
-- `iceberg_catalog.bronze.payments` → `tracking.silver_payments` (native SR Primary Key table)
-- `tracking.silver_payments` → `analytics.gold_revenue` (native SR Aggregate table)
+dbt_starrocks_silver transform từ Iceberg Bronze:
+- Source: `iceberg_catalog.bronze.payments` (external catalog, Parquet on MinIO)
+- Target: `tracking.silver_payments` (PRIMARY KEY table, UPSERT by `event_id + payment_date`)
+- Incremental: chỉ process `payment_date >= MAX - 1 day` mỗi lần chạy
+- Schedule: mỗi 15 phút qua Airflow DAG `dw_silver_ingest`
+
+### StarRocks Gold — `analytics.gold_revenue`
+
+dbt_starrocks_gold aggregate từ Silver:
+- Source: `tracking.silver_payments`
+- Target: `analytics.gold_revenue` (full rebuild mỗi lần chạy)
+- Metrics: `total_revenue`, `total_paid_orders`, `avg_order_value`, `unique_users` theo `payment_date`
+- Schedule: daily 02:00 UTC qua Airflow DAG `dw_medallion_pipeline`
 
 ---
 
@@ -113,13 +124,25 @@ docker/dw/
 │   └── kafka_to_iceberg.sql        # Flink SQL: Kafka → Iceberg Bronze
 └── starrocks/
     └── init/
-        ├── 00_iceberg_catalog.sql  # SR Iceberg ext catalog + silver_payments pre-create
-        ├── 01_silver_mirror.sql    # [future] dbt Silver transform
-        └── 02_gold.sql             # [future] dbt Gold aggregation
+        └── 00_iceberg_catalog.sql  # SR Iceberg ext catalog + silver_payments + analytics DB
 
 src/services/analytics-aggregator/dw/
-└── dbt/                            # [future] dbt-starrocks project
-    ├── dbt_project.yml
-    ├── profiles.yml
-    └── models/gold/gold_revenue.sql
+├── Dockerfile.dbt                  # dbt-starrocks image
+├── dbt_silver/                     # dbt project: Iceberg Bronze → tracking.silver_payments
+│   ├── dbt_project.yml
+│   ├── profiles.yml
+│   └── models/
+│       ├── sources.yml             # Source: iceberg_catalog.bronze.payments
+│       └── silver/
+│           └── silver_payments.sql
+├── dbt/                            # dbt project: tracking.silver_payments → analytics.gold_revenue
+│   ├── dbt_project.yml
+│   ├── profiles.yml
+│   └── models/
+│       ├── sources.yml             # Source: tracking.silver_payments
+│       └── gold/
+│           └── gold_revenue.sql
+└── dags/                           # Airflow DAGs
+    ├── silver_ingest_dag.py        # DAG dw_silver_ingest (*/15 min)
+    └── medallion_pipeline_dag.py   # DAG dw_medallion_pipeline (daily 02:00)
 ```

@@ -14,23 +14,28 @@
 #   (HadoopCatalog, s3a://lakehouse/warehouse/, MinIO)
 #           ↓ StarRocks external catalog (query-on-read)
 #   iceberg_catalog.bronze.payments     ← "SR Bronze"
-#           ↓ [future] dbt-starrocks
-#   tracking.silver_payments
-#           ↓ [future] dbt-starrocks
+#           ↓ dbt-starrocks (Airflow, mỗi 15 phút)
+#   tracking.silver_payments            ← SR native PRIMARY KEY table
+#           ↓ dbt-starrocks (Airflow, daily)
 #   analytics.gold_revenue
 #
 # =============================================================================
 # SERVICES:
-# 1. kafka, kafka-ui        — Event streaming
-# 2. event-producer         — Sinh 500 payment events/s
-# 3. tracking-ingestor      — Validate + forward → payment-events-ingest
-# 4. minio                  — S3-compatible object store (Iceberg data)
-# 5. starrocks              — MPP query engine: Iceberg ext catalog + Silver + Gold
-# 6. flink-jobmanager       — Flink cluster coordinator (Web UI port 8083)
-# 7. flink-taskmanager      — Flink worker (4 slots)
-# 8. flink-iceberg-job      — One-shot: submit Kafka→Iceberg SQL job
+#  1. kafka, kafka-ui        — Event streaming
+#  2. event-producer         — Sinh 500 payment events/s
+#  3. tracking-ingestor      — Validate + forward → payment-events-ingest
+#  4. minio                  — S3-compatible object store (Iceberg data)
+#  5. starrocks              — MPP query engine: Iceberg ext catalog + Silver + Gold
+#  6. flink-jobmanager       — Flink cluster coordinator (Web UI port 8083)
+#  7. flink-taskmanager      — Flink worker (4 slots)
+#  8. flink-iceberg-job      — One-shot: submit Kafka→Iceberg SQL job
+#  9. dbt-silver             — One-shot dbt Silver transform (profile: dbt)
+# 10. airflow-postgres       — Airflow metadata DB
+# 11. airflow-webserver      — Airflow UI (port 8084)
+# 12. airflow-scheduler      — Chạy dw_silver_ingest + dw_medallion_pipeline DAGs
+# 13. superset               — BI dashboard (port 8088, StarRocks connection)
 #
-# NOTE: Init thủ công (bucket + catalog) — xem docs/dw/setup.md
+# NOTE: Init thủ công (bucket + catalog + Airflow) — xem docs/dw/setup.md
 # =============================================================================
 
 version: '3.8'
@@ -45,6 +50,9 @@ volumes:
   minio-data:
   starrocks-fe-meta:
   starrocks-be-storage:
+  airflow-logs:
+  airflow-db-data:
+  superset-home:
 
 services:
   # ===========================================================================
@@ -253,6 +261,136 @@ services:
     depends_on:
       flink-jobmanager:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ===========================================================================
+  # DBT-SILVER — one-shot transform Iceberg Bronze → StarRocks Silver
+  # Run manual: docker compose run --rm dbt-silver run --profiles-dir .
+  # Hoặc để Airflow tự chạy qua DAG dw_silver_ingest
+  # Build: docker compose build dbt-silver
+  # ===========================================================================
+  dbt-silver:
+    build:
+      context: ../../src/services/analytics-aggregator/dw
+      dockerfile: Dockerfile.dbt
+    container_name: dbt-silver
+    networks:
+      - dw-network
+    volumes:
+      - ../../src/services/analytics-aggregator/dw/dbt_silver:/usr/app
+    environment:
+      STARROCKS_HOST: starrocks
+      STARROCKS_MYSQL_PORT: "9030"
+    command: ["run", "--profiles-dir", "."]
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    profiles:
+      - dbt
+    restart: "no"
+
+  # ===========================================================================
+  # AIRFLOW — Orchestrator (LocalExecutor)
+  # DAGs: src/services/analytics-aggregator/dw/dags/
+  # Init thủ công: xem docs/dw/setup.md
+  # ===========================================================================
+  airflow-postgres:
+    image: postgres:15
+    container_name: dw-airflow-postgres
+    networks:
+      - dw-network
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-webserver:
+    build:
+      context: ..
+      dockerfile: Dockerfile.airflow
+    container_name: dw-airflow-webserver
+    hostname: dw-airflow-webserver
+    networks:
+      - dw-network
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@dw-airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      STARROCKS_HOST: starrocks
+      STARROCKS_MYSQL_PORT: "9030"
+    volumes:
+      - ../../src/services/analytics-aggregator/dw/dags:/opt/airflow/dags
+      - ../../src/services/analytics-aggregator:/opt/analytics
+      - airflow-logs:/opt/airflow/logs
+    ports:
+      - "8084:8080"
+    command: webserver
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile.airflow
+    container_name: dw-airflow-scheduler
+    hostname: dw-airflow-scheduler
+    networks:
+      - dw-network
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@dw-airflow-postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      STARROCKS_HOST: starrocks
+      STARROCKS_MYSQL_PORT: "9030"
+    volumes:
+      - ../../src/services/analytics-aggregator/dw/dags:/opt/airflow/dags
+      - ../../src/services/analytics-aggregator:/opt/analytics
+      - airflow-logs:/opt/airflow/logs
+    command: scheduler
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SUPERSET — BI Dashboard (StarRocks connection)
+  # http://localhost:8088  |  admin / admin
+  # StarRocks URI: starrocks://root:@starrocks:9030/analytics
+  # Init thủ công: xem docs/dw/setup.md
+  # ===========================================================================
+  superset:
+    build:
+      context: ..
+      dockerfile: Dockerfile.superset
+    container_name: dw-superset
+    hostname: dw-superset
+    networks:
+      - dw-network
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "8162d0aaf944ec51fe797903d02eb653ee605b0ef0d9f887c7bb6574ba8b425e"
+    volumes:
+      - superset-home:/app/superset_home
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - "superset run -h 0.0.0.0 -p 8088 --with-threads"
     restart: unless-stopped
 
   # One-shot: submit Flink SQL job sau khi cluster + Kafka + MinIO sẵn sàng

@@ -15,6 +15,12 @@ cd com/tm/docker/dw
 # Build Flink image (thêm Kafka connector + Iceberg runtime + S3 plugin)
 docker compose build flink-jobmanager flink-taskmanager flink-iceberg-job
 # Lần đầu ~5-10 phút (download JARs từ Maven)
+
+# Build Airflow image (thêm dbt-starrocks + mysql-client)
+docker compose build airflow-webserver airflow-scheduler
+
+# Build dbt-silver image (dbt-starrocks)
+docker compose build dbt-silver
 ```
 
 ---
@@ -28,7 +34,10 @@ docker compose up -d \
   kafka \
   kafka-ui \
   minio \
-  starrocks
+  starrocks \
+  airflow-postgres \
+  airflow-webserver \
+  airflow-scheduler
 ```
 
 Đợi services healthy (~90s — StarRocks cần thời gian khởi động):
@@ -38,6 +47,8 @@ docker compose ps
 # kafka: healthy
 # minio: healthy
 # starrocks: healthy (chờ ~60s)
+# airflow-postgres: healthy
+# airflow-webserver: running (port 8084)
 
 # Kiểm tra StarRocks FE healthy
 curl -sf http://localhost:8030/api/health
@@ -112,8 +123,9 @@ Script này tạo:
 | Object | Loại | Mô tả |
 |--------|------|-------|
 | `iceberg_catalog` | EXTERNAL CATALOG | Trỏ vào MinIO `s3a://lakehouse/warehouse` |
-| `tracking` | DATABASE | Native SR database cho Silver + Gold |
-| `tracking.silver_payments` | PRIMARY KEY TABLE | Pre-create để dbt insert sau này |
+| `tracking` | DATABASE | Native SR database — Silver layer |
+| `tracking.silver_payments` | PRIMARY KEY TABLE | Pre-create để dbt_starrocks_silver UPSERT |
+| `analytics` | DATABASE | Native SR database — Gold layer (dbt tự tạo table) |
 
 **Cách 1 — Qua Docker (khuyến nghị — tránh lỗi MySQL 9.x):**
 
@@ -138,6 +150,10 @@ Xác nhận:
 SHOW CATALOGS;
 -- default_catalog
 -- iceberg_catalog   ← phải thấy
+
+SHOW DATABASES;
+-- tracking          ← Silver DB
+-- analytics         ← Gold DB
 
 SHOW TABLES FROM tracking;
 -- silver_payments   ← phải thấy
@@ -173,7 +189,57 @@ curl -sf http://localhost:8083/jobs | python3 -m json.tool
 
 ---
 
-## Bước 8 — Verify end-to-end
+## Bước 8 — Airflow: init DB + tạo admin
+
+```bash
+docker exec dw-airflow-webserver airflow db upgrade
+
+docker exec dw-airflow-webserver airflow users create \
+  --username admin \
+  --password admin123 \
+  --firstname Admin \
+  --lastname Admin \
+  --role Admin \
+  --email admin@example.com
+```
+
+Airflow UI: http://localhost:8084 → `admin` / `admin123`
+
+DAGs sẽ tự load từ volume mount (`analytics-aggregator/dw/dags/`):
+
+| DAG | Schedule | Nhiệm vụ |
+|-----|----------|---------|
+| `dw_silver_ingest` | `*/15 * * * *` | `dbt run` → `tracking.silver_payments` (UPSERT từ Iceberg Bronze) |
+| `dw_medallion_pipeline` | `0 2 * * *` | Full pipeline: Silver + Gold rebuild hàng ngày |
+
+---
+
+## Bước 9 — Superset: init + kết nối StarRocks
+
+```bash
+docker exec dw-superset superset db upgrade
+
+docker exec dw-superset superset fab create-admin \
+  --username admin \
+  --firstname Admin \
+  --lastname Admin \
+  --email admin@superset.com \
+  --password admin
+
+docker exec dw-superset superset init
+```
+
+Superset UI: http://localhost:8088 → `admin` / `admin`
+
+Thêm StarRocks database connection:
+Settings → Database Connections → + → Other → SQLAlchemy URI:
+```
+starrocks://root:@starrocks:9030/analytics
+```
+
+---
+
+## Bước 10 — Verify end-to-end
 
 Flink commit Iceberg sau mỗi 60 giây (checkpoint interval). Đợi ~90s rồi kiểm tra:
 
@@ -187,7 +253,24 @@ mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*), MIN(payment_date), MAX(payment_date) \
    FROM iceberg_catalog.bronze.payments;"
 
-# 3. Kiểm tra Flink consumer lag
+# 3. Trigger dbt silver thủ công (tự chạy mỗi 15 phút)
+docker exec dw-airflow-webserver airflow dags trigger dw_silver_ingest
+
+# 4. Kiểm tra Silver sau ~30s
+mysql -h 127.0.0.1 -P 9030 -u root -e \
+  "SELECT COUNT(*), MIN(payment_date), MAX(payment_date) \
+   FROM tracking.silver_payments;"
+
+# 5. Trigger full pipeline (Silver + Gold)
+docker exec dw-airflow-webserver airflow dags trigger dw_medallion_pipeline
+
+# 6. Kiểm tra Gold sau ~60s
+mysql -h 127.0.0.1 -P 9030 -u root -e \
+  "SELECT payment_date, total_revenue, total_paid_orders, unique_users \
+   FROM analytics.gold_revenue \
+   ORDER BY payment_date DESC LIMIT 5;"
+
+# 7. Kiểm tra Flink consumer lag
 docker exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 --describe --group flink-iceberg-bronze
 ```
@@ -247,6 +330,56 @@ docker run --rm --network tracking-network minio/mc:latest \
 
 ---
 
+### Airflow DAG không load
+
+```bash
+docker exec dw-airflow-webserver airflow dags list
+docker exec dw-airflow-webserver ls /opt/airflow/dags/
+# Phải thấy: silver_ingest_dag.py  medallion_pipeline_dag.py
+```
+
+### Silver trống sau Airflow chạy
+
+```bash
+# Kiểm tra dbt run logs trong Airflow UI: http://localhost:8084
+# Hoặc check task log:
+docker exec dw-airflow-webserver airflow tasks logs dw_silver_ingest dbt_silver_run $(date +%Y-%m-%dT%H:%M:%S)
+
+# Verify Iceberg Bronze đã có data
+mysql -h 127.0.0.1 -P 9030 -u root -e "SELECT COUNT(*) FROM iceberg_catalog.bronze.payments;"
+# Phải > 0 (nếu = 0: Flink chưa commit, đợi thêm 60s)
+```
+
+### Gold trống / analytics.gold_revenue không tồn tại
+
+```bash
+# Kiểm tra analytics DB tồn tại
+mysql -h 127.0.0.1 -P 9030 -u root -e "SHOW DATABASES;"
+
+# Nếu mất (SR restart), chạy lại init
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root \
+  < com/tm/docker/dw/starrocks/init/00_iceberg_catalog.sql
+
+# Re-trigger Gold build
+docker exec dw-airflow-webserver airflow dags trigger dw_medallion_pipeline
+```
+
+### Superset lỗi kết nối StarRocks
+
+```bash
+# Kiểm tra starrocks package đã install
+docker exec dw-superset /app/.venv/bin/python -c "import starrocks; print('OK')"
+
+# Test kết nối thủ công
+docker exec dw-superset python3 -c "
+import sqlalchemy as sa
+e = sa.create_engine('starrocks://root:@starrocks:9030/analytics')
+print(e.execute('SELECT 1').fetchone())
+"
+```
+
+---
+
 ## Service URLs
 
 | Service | URL / Host | Credentials |
@@ -257,3 +390,5 @@ docker run --rm --network tracking-network minio/mc:latest \
 | Flink Web UI | http://localhost:8083 | — |
 | StarRocks MySQL | `mysql -h 127.0.0.1 -P 9030 -u root` | `root` / (trống) |
 | StarRocks FE HTTP | http://localhost:8030 | `root` / (trống) |
+| Airflow | http://localhost:8084 | `admin` / `admin123` |
+| Superset | http://localhost:8088 | `admin` / `admin` |
