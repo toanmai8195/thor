@@ -22,12 +22,13 @@
 {{
   config(
     materialized = 'incremental',
-    unique_key = ['event_id', 'payment_date']
+    on_schema_change = 'ignore'
   )
 }}
 
 SELECT
-    event_id,
+    -- Cast to VARCHAR(64) to match silver_payments DDL and prevent dbt expand_column_types
+    CAST(event_id AS VARCHAR(64))  AS event_id,
     payment_date,
     user_id,
 
@@ -39,17 +40,19 @@ SELECT
     amount,
 
     -- ===========================================================================
-    -- NORMALIZE status
+    -- NORMALIZE status — cast to VARCHAR(20) to match DDL
     -- ===========================================================================
-    -- Bước 1: lowercase + trim
-    -- Bước 2: map giá trị không hợp lệ → 'unknown'
-    CASE
-        WHEN LOWER(TRIM(status)) IN ('paid', 'pending', 'failed', 'refunded', 'cancelled')
-            THEN LOWER(TRIM(status))
-        ELSE 'unknown'
-    END AS status,
+    CAST(
+        CASE
+            WHEN LOWER(TRIM(status)) IN ('paid', 'pending', 'failed', 'refunded', 'cancelled')
+                THEN LOWER(TRIM(status))
+            ELSE 'unknown'
+        END
+    AS VARCHAR(20)) AS status,
 
-    updated_at
+    -- updated_at từ source có thể NULL nếu Kafka event không set field này.
+    -- Fallback sang ingested_at (Flink CURRENT_TIMESTAMP) để không mất data.
+    COALESCE(updated_at, ingested_at) AS updated_at
 
 FROM {{ source('bronze', 'payments') }}
 
@@ -59,6 +62,7 @@ WHERE
     AND user_id IS NOT NULL AND user_id > 0     -- user_id hợp lệ
     AND amount IS NOT NULL AND amount > 0       -- chỉ giữ amount dương
     AND payment_date IS NOT NULL
+    -- updated_at có thể NULL nếu Kafka không set field này (COALESCE sang ingested_at trong SELECT)
 
 {% if is_incremental() %}
     -- Incremental: chỉ xử lý data có payment_date gần nhất (1 ngày overlap để catch late data).

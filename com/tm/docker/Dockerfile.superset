@@ -5,5 +5,9 @@ USER root
 # Dùng --prefix để cài thẳng vào venv site-packages
 RUN pip3 install --no-cache-dir --prefix=/app/.venv \
     clickhouse-connect \
-    starrocks
+    starrocks \
+    PyMySQL \
+    "sqlalchemy<2" \
+ && printf 'from pymysql import *\nfrom pymysql import constants, connections, converters, cursors\n' \
+    > /app/.venv/lib/python3.10/site-packages/MySQLdb.py
 USER superset

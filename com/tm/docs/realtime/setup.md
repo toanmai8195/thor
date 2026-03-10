@@ -117,7 +117,7 @@ ClickHouse bắt đầu consume `payment-events-ingest` ngay khi Kafka Engine t�
 ## Bước 6 — Airflow: init DB + tạo admin
 
 ```bash
-docker exec airflow-webserver airflow db upgrade
+docker exec airflow-webserver airflow db migrate
 
 docker exec airflow-webserver airflow users create \
   --username admin \
@@ -178,6 +178,57 @@ curl 'http://localhost:8123/?query=SELECT+count()+FROM+tracking.silver_events'
 
 # 4. Ingestion rate (last 5 phút)
 curl 'http://localhost:8123/?query=SELECT+toStartOfMinute(ingested_at)+AS+m,count()+FROM+tracking.payments_bronze+WHERE+ingested_at>=now()-INTERVAL+5+MINUTE+GROUP+BY+m+ORDER+BY+m'
+```
+
+---
+
+## Cập nhật config
+
+> **Cơ chế reload:** DAG files và dbt models được mount vào container bằng **bind mount** (volume trỏ thẳng vào thư mục trên host). Container đọc trực tiếp từ filesystem host — khi file thay đổi trên host, container thấy ngay. Airflow scheduler chủ động poll thư mục DAGs mỗi ~30s; dbt không chạy liên tục mà spawn process mới mỗi lần trigger nên luôn đọc file mới nhất.
+>
+> Ngược lại, **Dockerfile** thay đổi (thêm package, driver) thì code nằm trong image layer — container đang chạy không thể tự cập nhật, bắt buộc phải rebuild image và restart container.
+
+| Thay đổi | Cơ chế | Cần làm gì |
+|----------|--------|-----------|
+| DAG files (`dags/*.py`) | Bind mount + Airflow poll 30s | Không cần restart |
+| dbt models (`dbt_silver/**/*.sql`, `*.yml`) | Bind mount + dbt spawn fresh process | Không cần restart |
+| ClickHouse init SQL (`clickhouse/init/*.sql`) | Chỉ chạy lần đầu khởi động container | Re-run thủ công |
+| `Dockerfile.airflow` (thêm package Python, system lib) | Code trong image layer | Rebuild + restart Airflow |
+| `Dockerfile.superset` (thêm driver DB) | Code trong image layer | Rebuild + restart Superset |
+| `docker-compose.yml` (env vars, ports, volumes) | Docker Compose config | `docker compose up -d` |
+
+### Rebuild + restart Airflow
+
+```bash
+cd com/tm/docker/realtime
+docker compose build airflow-webserver airflow-scheduler
+docker compose up -d airflow-webserver airflow-scheduler
+```
+
+### Rebuild + restart Superset
+
+```bash
+cd com/tm/docker/realtime
+docker compose build superset
+docker compose up -d superset
+```
+
+### Re-run ClickHouse init SQL
+
+```bash
+# Chạy lại toàn bộ init (IF NOT EXISTS — an toàn, không xoá data)
+docker exec -i clickhouse clickhouse-client \
+  < com/tm/docker/realtime/clickhouse/init/01_bronze.sql
+
+docker exec -i clickhouse clickhouse-client \
+  < com/tm/docker/realtime/clickhouse/init/02_silver.sql
+```
+
+### Cập nhật docker-compose.yml (env vars, ports, volumes)
+
+```bash
+cd com/tm/docker/realtime
+docker compose up -d          # chỉ restart container bị thay đổi config
 ```
 
 ---

@@ -192,7 +192,7 @@ curl -sf http://localhost:8083/jobs | python3 -m json.tool
 ## Bước 8 — Airflow: init DB + tạo admin
 
 ```bash
-docker exec dw-airflow-webserver airflow db upgrade
+docker exec dw-airflow-webserver airflow db migrate
 
 docker exec dw-airflow-webserver airflow users create \
   --username admin \
@@ -209,8 +209,7 @@ DAGs sẽ tự load từ volume mount (`analytics-aggregator/dw/dags/`):
 
 | DAG | Schedule | Nhiệm vụ |
 |-----|----------|---------|
-| `dw_silver_ingest` | `*/15 * * * *` | `dbt run` → `tracking.silver_payments` (UPSERT từ Iceberg Bronze) |
-| `dw_medallion_pipeline` | `0 2 * * *` | Full pipeline: Silver + Gold rebuild hàng ngày |
+| `dw_medallion_pipeline` | `*/3 * * * *` | Full pipeline: Bronze check → Silver (incremental UPSERT) → Gold (rebuild) |
 
 ---
 
@@ -234,8 +233,98 @@ Superset UI: http://localhost:8088 → `admin` / `admin`
 Thêm StarRocks database connection:
 Settings → Database Connections → + → Other → SQLAlchemy URI:
 ```
-starrocks://root:@starrocks:9030/analytics
+starrocks+pymysql://root:@starrocks:9030/analytics
 ```
+
+### Chỉ số có thể visualize
+
+Source: `analytics.gold_revenue` — grain 1 row = 1 ngày (`payment_date`)
+
+**Bước 1 — Thêm dataset:**
+Datasets → + Dataset → Database: `StarRocks` → Schema: `analytics` → Table: `gold_revenue` → Create dataset and create chart
+
+**Bước 2 — Tạo từng chart** (Charts → + Chart → chọn dataset `gold_revenue`):
+
+---
+
+#### Doanh thu theo ngày — Line chart
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Line Chart |
+| Time column | `payment_date` |
+| Time grain | Day |
+| Metrics | `SUM(total_revenue)` |
+| Series | _(để trống)_ |
+
+---
+
+#### Số đơn thành công theo ngày — Bar chart
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Bar Chart |
+| Time column | `payment_date` |
+| Time grain | Day |
+| Metrics | `SUM(total_paid_orders)` |
+
+---
+
+#### Giá trị đơn trung bình (AOV) — Line chart
+
+`avg_order_value` đã được tính sẵn trong Gold (= `total_revenue / total_paid_orders` per ngày), chỉ cần AVG hoặc SUM đều cho kết quả đúng vì grain là ngày.
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Line Chart |
+| Time column | `payment_date` |
+| Time grain | Day |
+| Metrics | `AVG(avg_order_value)` |
+
+---
+
+#### Số user unique theo ngày — Line chart
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Line Chart |
+| Time column | `payment_date` |
+| Time grain | Day |
+| Metrics | `SUM(unique_users)` |
+
+---
+
+#### Tỷ lệ đơn theo trạng thái — Pie chart
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Pie Chart |
+| Dimensions | _(không dùng time column)_ |
+| Metrics | `SUM(total_paid_orders)`, `SUM(pending_orders)`, `SUM(failed_orders)`, `SUM(refunded_orders)`, `SUM(cancelled_orders)` |
+
+> Hoặc dùng **Bar Chart** với Breakdown by: tạo 5 metrics riêng, enable "Stack".
+
+---
+
+#### Tổng doanh thu (Big Number)
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Big Number with Trendline |
+| Time column | `payment_date` |
+| Time grain | Day |
+| Metric | `SUM(total_revenue)` |
+
+---
+
+#### Revenue theo tuần — Bar chart
+
+| Field | Giá trị |
+|-------|---------|
+| Chart type | Bar Chart |
+| Time column | `payment_date` |
+| Time grain | **Week** |
+| Metrics | `SUM(total_revenue)` |
 
 ---
 
@@ -253,16 +342,13 @@ mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*), MIN(payment_date), MAX(payment_date) \
    FROM iceberg_catalog.bronze.payments;"
 
-# 3. Trigger dbt silver thủ công (tự chạy mỗi 15 phút)
-docker exec dw-airflow-webserver airflow dags trigger dw_silver_ingest
+# 3. Trigger pipeline thủ công (tự chạy mỗi 3 phút)
+docker exec dw-airflow-webserver airflow dags trigger dw_medallion_pipeline
 
 # 4. Kiểm tra Silver sau ~30s
 mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*), MIN(payment_date), MAX(payment_date) \
    FROM tracking.silver_payments;"
-
-# 5. Trigger full pipeline (Silver + Gold)
-docker exec dw-airflow-webserver airflow dags trigger dw_medallion_pipeline
 
 # 6. Kiểm tra Gold sau ~60s
 mysql -h 127.0.0.1 -P 9030 -u root -e \
@@ -273,6 +359,88 @@ mysql -h 127.0.0.1 -P 9030 -u root -e \
 # 7. Kiểm tra Flink consumer lag
 docker exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 --describe --group flink-iceberg-bronze
+```
+
+---
+
+## Cập nhật config
+
+> **Cơ chế reload:** DAG files và dbt models được mount vào container bằng **bind mount** (volume trỏ thẳng vào thư mục trên host). Container đọc trực tiếp từ filesystem host — khi file thay đổi trên host, container thấy ngay. Airflow scheduler chủ động poll thư mục DAGs mỗi ~30s; dbt không chạy liên tục mà spawn process mới mỗi lần trigger nên luôn đọc file mới nhất.
+>
+> Ngược lại, **Dockerfile** thay đổi (thêm package, JAR) thì code nằm trong image layer — container đang chạy không thể tự cập nhật, bắt buộc phải rebuild image và restart container.
+
+| Thay đổi | Cơ chế | Cần làm gì |
+|----------|--------|-----------|
+| DAG files (`dags/*.py`) | Bind mount + Airflow poll 30s | Không cần restart |
+| dbt models (`dbt_silver/**`, `dbt/**`) | Bind mount + dbt spawn fresh process | Không cần restart |
+| `flink/kafka_to_iceberg.sql` | Bind mount — nhưng Flink job đã chạy, không tự reload | Cancel job cũ + re-submit |
+| `starrocks/init/*.sql` | Chỉ chạy lần đầu khởi động container | Re-run thủ công |
+| `Dockerfile.airflow` (thêm package Python, system lib) | Code trong image layer | Rebuild + restart Airflow |
+| `Dockerfile.flink` (thêm connector JAR) | Code trong image layer | Rebuild + restart Flink + re-submit job |
+| `Dockerfile.superset` (thêm driver DB) | Code trong image layer | Rebuild + restart Superset |
+| `docker-compose.yml` (env vars, ports, volumes) | Docker Compose config | `docker compose up -d` |
+
+### Rebuild + restart Airflow
+
+```bash
+cd com/tm/docker/dw
+docker compose build airflow-webserver airflow-scheduler
+docker compose up -d airflow-webserver airflow-scheduler
+```
+
+### Rebuild + restart Flink + re-submit job
+
+```bash
+cd com/tm/docker/dw
+
+# Cancel job đang chạy
+JOB_ID=$(curl -sf http://localhost:8083/jobs | python3 -c \
+  "import sys,json; jobs=json.load(sys.stdin)['jobs']; \
+   print(next(j['id'] for j in jobs if j['status']=='RUNNING'), end='')")
+curl -sf -X PATCH "http://localhost:8083/jobs/$JOB_ID?mode=cancel"
+
+# Rebuild image
+docker compose build flink-jobmanager flink-taskmanager flink-iceberg-job
+
+# Restart cluster
+docker compose up -d flink-jobmanager flink-taskmanager
+
+# Re-submit job (đợi cluster healthy ~15s)
+docker compose up flink-iceberg-job
+```
+
+### Cập nhật Flink SQL (kafka_to_iceberg.sql) không rebuild image
+
+```bash
+# File được mount vào container, chỉ cần cancel + re-submit
+JOB_ID=$(curl -sf http://localhost:8083/jobs | python3 -c \
+  "import sys,json; jobs=json.load(sys.stdin)['jobs']; \
+   print(next(j['id'] for j in jobs if j['status']=='RUNNING'), end='')")
+curl -sf -X PATCH "http://localhost:8083/jobs/$JOB_ID?mode=cancel"
+docker compose up flink-iceberg-job
+```
+
+### Rebuild + restart Superset
+
+```bash
+cd com/tm/docker/dw
+docker compose build superset
+docker compose up -d superset
+```
+
+### Re-run StarRocks init SQL
+
+```bash
+# IF NOT EXISTS — an toàn với data hiện có
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root \
+  < com/tm/docker/dw/starrocks/init/00_iceberg_catalog.sql
+```
+
+### Cập nhật docker-compose.yml (env vars, ports, volumes)
+
+```bash
+cd com/tm/docker/dw
+docker compose up -d          # chỉ restart container bị thay đổi config
 ```
 
 ---
@@ -335,7 +503,7 @@ docker run --rm --network tracking-network minio/mc:latest \
 ```bash
 docker exec dw-airflow-webserver airflow dags list
 docker exec dw-airflow-webserver ls /opt/airflow/dags/
-# Phải thấy: silver_ingest_dag.py  medallion_pipeline_dag.py
+# Phải thấy: medallion_pipeline_dag.py
 ```
 
 ### Silver trống sau Airflow chạy
@@ -343,7 +511,7 @@ docker exec dw-airflow-webserver ls /opt/airflow/dags/
 ```bash
 # Kiểm tra dbt run logs trong Airflow UI: http://localhost:8084
 # Hoặc check task log:
-docker exec dw-airflow-webserver airflow tasks logs dw_silver_ingest dbt_silver_run $(date +%Y-%m-%dT%H:%M:%S)
+docker exec dw-airflow-webserver airflow tasks logs dw_medallion_pipeline silver_layer.dbt_silver_run $(date +%Y-%m-%dT%H:%M:%S)
 
 # Verify Iceberg Bronze đã có data
 mysql -h 127.0.0.1 -P 9030 -u root -e "SELECT COUNT(*) FROM iceberg_catalog.bronze.payments;"
@@ -373,7 +541,7 @@ docker exec dw-superset /app/.venv/bin/python -c "import starrocks; print('OK')"
 # Test kết nối thủ công
 docker exec dw-superset python3 -c "
 import sqlalchemy as sa
-e = sa.create_engine('starrocks://root:@starrocks:9030/analytics')
+e = sa.create_engine('starrocks+pymysql://root:@starrocks:9030/analytics')
 print(e.execute('SELECT 1').fetchone())
 "
 ```

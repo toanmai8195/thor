@@ -8,7 +8,6 @@ profile: 'starrocks_silver'
 # Paths
 model-paths: ["models"]
 test-paths: ["tests"]
-macro-paths: ["macros"]
 
 clean-targets:
   - "target"
@@ -26,5 +25,3 @@ models:
   dbt_starrocks_silver:
     silver:
       +materialized: incremental
-      +unique_key: ['event_id', 'payment_date']
-      +on_schema_change: ignore

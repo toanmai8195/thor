@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: silver
     description: Silver layer - tracking.silver_payments (StarRocks native, populated by dbt_starrocks_silver)
-    database: tracking
+    database: default_catalog
     schema: tracking
     tables:
       - name: silver_payments

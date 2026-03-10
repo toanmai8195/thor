@@ -2,18 +2,18 @@
 =============================================================================
 MEDALLION PIPELINE DAG (DW) — Iceberg Bronze → Silver → Gold
 =============================================================================
-Full rebuild pipeline chạy daily:
+Pipeline chạy mỗi 3 phút:
 
   iceberg_catalog.bronze.payments   (Iceberg, Flink ghi liên tục)
            ↓  dbt_starrocks_silver (incremental UPSERT)
   tracking.silver_payments          (StarRocks PRIMARY KEY)
            ↓  dbt_starrocks_gold (full rebuild)
-  analytics.gold_revenue            (StarRocks daily aggregate)
+  analytics.gold_revenue            (StarRocks aggregate)
            ↓
   Superset (http://localhost:8088)
 
-Schedule: 0 2 * * *  (daily 02:00 UTC — sau khi data cuối ngày đã commit vào Iceberg)
-max_active_runs=1: tránh đồng thời 2 pipeline.
+Schedule: */3 * * * *  (mỗi 3 phút — Flink commit 60s, đủ thời gian có data mới)
+max_active_runs=1: tránh overlap khi pipeline chạy chậm.
 =============================================================================
 """
 
@@ -27,9 +27,8 @@ from airflow.utils.dates import days_ago
 
 default_args = {
     "owner": "data-engineering",
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
-    "retry_exponential_backoff": True,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=3),
 }
 
 SR_ENV = {
@@ -42,7 +41,7 @@ with DAG(
     dag_id="dw_medallion_pipeline",
     description="DW full rebuild: Iceberg Bronze → Silver (SR) → Gold (SR) → Superset",
     default_args=default_args,
-    schedule_interval="0 2 * * *",
+    schedule_interval="*/3 * * * *",
     start_date=days_ago(1),
     catchup=False,
     max_active_runs=1,
@@ -56,11 +55,15 @@ with DAG(
     check_bronze = BashOperator(
         task_id="check_bronze_freshness",
         bash_command="""
+        RC=0
         COUNT=$(mysql -h ${STARROCKS_HOST} -P ${STARROCKS_MYSQL_PORT} -u root \
           --batch --silent --connect-timeout=10 \
-          -e "SELECT COUNT(*) FROM iceberg_catalog.bronze.payments \
-              WHERE payment_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)" 2>/dev/null || echo "0")
-        echo "Iceberg Bronze rows (yesterday+today): $COUNT"
+          -e "SELECT COUNT(*) FROM iceberg_catalog.bronze.payments" 2>&1) || RC=$?
+        if [ $RC -ne 0 ]; then
+          echo "mysql error (RC=$RC): $COUNT"
+          exit 1
+        fi
+        echo "Iceberg Bronze total rows: $COUNT"
         [ "${COUNT}" -gt 0 ] || { echo "No Bronze data — Flink chưa commit hoặc chưa có events"; exit 1; }
         """,
         env=SR_ENV,
