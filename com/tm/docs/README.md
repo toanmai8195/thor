@@ -43,9 +43,11 @@ Superset                             │ dbt (3min)
 
 | Doc | Nội dung |
 |-----|---------|
-| [cdp/setup.md](cdp/setup.md) | Hướng dẫn khởi động stack từ đầu |
-| [cdp/pipeline-realtime.md](cdp/pipeline-realtime.md) | Luồng 1: ClickHouse realtime — kiến trúc, schema, dbt, DAG |
-| [cdp/pipeline-dw.md](cdp/pipeline-dw.md) | Luồng 2: Iceberg + StarRocks DW — kiến trúc, schema, dbt, DAG |
+| [cdp/setup.md](cdp/setup.md) | Overview khởi động stack + shared infra |
+| [cdp/setup-realtime.md](cdp/setup-realtime.md) | Setup Luồng 1: ClickHouse realtime — step-by-step + troubleshooting |
+| [cdp/setup-dw.md](cdp/setup-dw.md) | Setup Luồng 2: Iceberg + StarRocks DW — step-by-step + troubleshooting |
+| [cdp/pipeline-realtime.md](cdp/pipeline-realtime.md) | Luồng 1: kiến trúc, schema, dbt config, DAG |
+| [cdp/pipeline-dw.md](cdp/pipeline-dw.md) | Luồng 2: kiến trúc, schema, Flink, dbt config, DAG |
 | [cdp/roadmap.md](cdp/roadmap.md) | Roadmap 7 bước: login → multi-source → identity → profile → segmentation → activation |
 
 ---

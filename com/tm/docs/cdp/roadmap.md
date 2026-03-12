@@ -73,9 +73,13 @@ Producer: ~500 events/s, 100k unique users, platform distribution ios(30%)/andro
 
 ### Tài liệu chi tiết
 
-- [Setup guide](setup.md)
-- [Luồng 1: Realtime (ClickHouse)](pipeline-realtime.md)
-- [Luồng 2: DW (Iceberg + StarRocks)](pipeline-dw.md)
+| Doc | Nội dung |
+|-----|---------|
+| [setup.md](setup.md) | Overview + shared infra (Kafka, Go images) |
+| [setup-realtime.md](setup-realtime.md) | Setup step-by-step Luồng 1 + troubleshooting |
+| [setup-dw.md](setup-dw.md) | Setup step-by-step Luồng 2 + troubleshooting |
+| [pipeline-realtime.md](pipeline-realtime.md) | Kiến trúc, schema, dbt config Luồng 1 |
+| [pipeline-dw.md](pipeline-dw.md) | Kiến trúc, schema, Flink, dbt config Luồng 2 |
 
 ---
 
