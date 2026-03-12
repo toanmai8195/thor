@@ -15,10 +15,28 @@ Tham khảo kiến trúc đầy đủ: [pipeline-dw.md](pipeline-dw.md)
 | Flink JobManager | `cdp-flink-jobmanager` | `8085` (Web UI) |
 | Flink TaskManager | `cdp-flink-taskmanager` | — |
 | Flink login job | `cdp-flink-login-job` | — (one-shot submit) |
-| StarRocks | `cdp-starrocks` | `9031` (MySQL), `8031` (FE HTTP) |
+| StarRocks | `cdp-starrocks` | `9031` (MySQL, host→container), `8031` (FE HTTP) |
 | Airflow webserver | `cdp-airflow-webserver` | `8086` |
 | Airflow scheduler | `cdp-airflow-scheduler` | — |
 | Superset | `cdp-superset` | `8089` |
+
+---
+
+## Lưu ý: MySQL client
+
+StarRocks dùng `mysql_native_password`. **MySQL 9.x (Homebrew default) không tương thích.**
+
+Dùng một trong hai cách:
+
+```bash
+# Cách 1 (khuyến nghị) — mysql trong container, không cần cài gì
+docker exec -it cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root
+
+# Cách 2 — cài mysql 8.x client trên host
+brew install mysql-client@8.4
+export PATH="/opt/homebrew/opt/mysql-client@8.4/bin:$PATH"
+mysql -h 127.0.0.1 -P 9031 -u root
+```
 
 ---
 
@@ -90,25 +108,19 @@ open http://localhost:9011
 # Navigate: cdp-lake → iceberg → bronze → login_events → data/
 
 # Kiểm tra qua StarRocks catalog
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*) FROM iceberg_catalog.bronze.login_events;"
 ```
 
 ### 4. StarRocks catalog + schema
 
 ```bash
-mysql -h 127.0.0.1 -P 9031 -u root <<'EOF'
--- Kiểm tra catalogs
-SHOW CATALOGS;
-
--- Kiểm tra database cdp
-SHOW DATABASES FROM default_catalog;
-
--- Kiểm tra tables trong cdp
-SHOW TABLES FROM cdp;
-
--- Phải thấy: silver_login, gold_user_daily
-EOF
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "
+  SHOW CATALOGS;
+  SHOW DATABASES FROM default_catalog;
+  SHOW TABLES FROM cdp;
+"
+# Phải thấy iceberg_catalog và tables: silver_login, gold_user_daily
 ```
 
 ### 5. Airflow DAG `cdp_medallion_pipeline`
@@ -122,31 +134,29 @@ open http://localhost:8086
 Sau lần chạy đầu tiên (~3 phút kể từ khi Iceberg có data):
 ```bash
 # Silver
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*) FROM cdp.silver_login;"
 
 # Gold
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT * FROM cdp.gold_user_daily ORDER BY event_date DESC LIMIT 7;"
 ```
 
 ### 6. Full end-to-end check
 
 ```bash
-mysql -h 127.0.0.1 -P 9031 -u root <<'EOF'
--- Rows theo từng layer
-SELECT
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "
+  SELECT
     (SELECT COUNT(*) FROM iceberg_catalog.bronze.login_events) AS bronze_rows,
     (SELECT COUNT(*) FROM cdp.silver_login)                    AS silver_rows,
     (SELECT COUNT(*) FROM cdp.gold_user_daily)                 AS gold_rows;
 
--- Gold metrics hôm nay
-SELECT event_date, dau, total_logins, ios_logins, android_logins, web_logins,
-       unique_sessions, unique_devices
-FROM cdp.gold_user_daily
-ORDER BY event_date DESC
-LIMIT 5;
-EOF
+  SELECT event_date, dau, total_logins, ios_logins, android_logins, web_logins,
+         unique_sessions, unique_devices
+  FROM cdp.gold_user_daily
+  ORDER BY event_date DESC
+  LIMIT 5;
+"
 ```
 
 ### 7. Superset kết nối StarRocks
@@ -198,14 +208,15 @@ open http://localhost:8085
 
 **StarRocks không thấy Iceberg catalog:**
 ```bash
-mysql -h 127.0.0.1 -P 9031 -u root -e "SHOW CATALOGS;"
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "SHOW CATALOGS;"
 # Nếu chỉ thấy default_catalog → init SQL chưa chạy
 
 # Xem StarRocks logs
 docker logs cdp-starrocks | grep -E "(ERROR|iceberg_catalog)" | tail -20
 
 # Chạy lại init SQL thủ công
-mysql -h 127.0.0.1 -P 9031 -u root < ./starrocks/init/00_cdp_schema.sql
+docker exec -i cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root \
+  < ./starrocks/init/00_cdp_schema.sql
 ```
 
 **dbt Silver/Gold thất bại:**

@@ -12,7 +12,7 @@
 -- =============================================================================
 -- ICEBERG EXTERNAL CATALOG (cùng MinIO instance với DW nếu chạy song song)
 -- =============================================================================
-CREATE EXTERNAL CATALOG IF NOT EXISTS iceberg_catalog
+CREATE EXTERNAL CATALOG iceberg_catalog
 COMMENT 'CDP Bronze layer — Apache Iceberg on MinIO (written by Flink)'
 PROPERTIES (
     "type"                           = "iceberg",

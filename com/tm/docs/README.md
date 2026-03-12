@@ -60,7 +60,7 @@ Superset                             │ dbt (3min)
 | ClickHouse HTTP | http://localhost:8124 | `default` / (trống) |
 | MinIO Console | http://localhost:9011 | `minioadmin` / `minioadmin` |
 | MinIO S3 API | http://localhost:9010 | — |
-| StarRocks MySQL | `mysql -h 127.0.0.1 -P 9031 -u root` | `root` / (trống) |
+| StarRocks MySQL | `docker exec -it cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root` | `root` / (trống) — MySQL 9.x không tương thích |
 | StarRocks FE HTTP | http://localhost:8031 | — |
 | Flink Web UI | http://localhost:8085 | — |
 | Airflow | http://localhost:8086 | `admin` / `admin123` |

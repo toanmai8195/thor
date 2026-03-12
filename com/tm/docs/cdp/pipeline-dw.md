@@ -235,18 +235,19 @@ open http://localhost:9011
 open http://localhost:8085
 
 # Bronze rows (qua StarRocks catalog)
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+# Lưu ý: MySQL 9.x không tương thích với StarRocks — dùng docker exec
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT COUNT(*) FROM iceberg_catalog.bronze.login_events;"
 
 # Silver sample
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT event_date, platform, country, COUNT(*) as cnt
    FROM cdp.silver_login
    GROUP BY event_date, platform, country
    ORDER BY event_date DESC LIMIT 20;"
 
 # Gold — daily metrics
-mysql -h 127.0.0.1 -P 9031 -u root -e \
+docker exec cdp-starrocks mysql -h 127.0.0.1 -P 9030 -u root -e \
   "SELECT * FROM cdp.gold_user_daily ORDER BY event_date DESC LIMIT 7;"
 
 # Airflow DAG

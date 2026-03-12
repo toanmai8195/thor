@@ -85,9 +85,17 @@ services:
     volumes:
       - cdp-kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      test:
+        - "CMD-SHELL"
+        - |
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+            --create --if-not-exists --topic login-events \
+            --partitions 6 --replication-factor 1 > /dev/null 2>&1 &&
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+            --create --if-not-exists --topic login-events-ingest \
+            --partitions 6 --replication-factor 1 > /dev/null 2>&1
       interval: 10s
-      timeout: 10s
+      timeout: 15s
       retries: 10
       start_period: 30s
 
@@ -197,9 +205,14 @@ services:
     volumes:
       - cdp-minio-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      test:
+        - "CMD-SHELL"
+        - |
+          curl -sf http://localhost:9000/minio/health/live &&
+          mc alias set local http://localhost:9000 minioadmin minioadmin > /dev/null 2>&1 &&
+          mc mb local/lakehouse --ignore-existing > /dev/null 2>&1
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 10
       start_period: 15s
 
@@ -225,10 +238,16 @@ services:
       - cdp-starrocks-be-storage:/opt/starrocks/be/storage
       - ./hadoop/core-site.xml:/data/deploy/starrocks/fe/conf/core-site.xml:ro
       - ./hadoop/core-site.xml:/data/deploy/starrocks/be/conf/core-site.xml:ro
+      - ./starrocks/init/00_cdp_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health 2>/dev/null | grep -q 'OK'"]
+      test:
+        - "CMD-SHELL"
+        - |
+          curl -sf http://localhost:8030/api/health 2>/dev/null | grep -q 'OK' &&
+          (mysql -h 127.0.0.1 -P 9030 -u root -e "SHOW CATALOGS;" 2>/dev/null | grep -q iceberg_catalog ||
+           mysql -h 127.0.0.1 -P 9030 -u root < /docker-entrypoint-initdb.d/init.sql 2>/dev/null)
       interval: 15s
-      timeout: 10s
+      timeout: 15s
       retries: 20
       start_period: 60s
     restart: unless-stopped
@@ -380,6 +399,8 @@ services:
     depends_on:
       airflow-postgres:
         condition: service_healthy
+      starrocks:
+        condition: service_healthy
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@cdp-airflow-postgres:5432/airflow
@@ -394,7 +415,19 @@ services:
       - cdp-airflow-logs:/opt/airflow/logs
     ports:
       - "8086:8080"
-    command: webserver
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname CDP \
+          --lastname Admin \
+          --role Admin \
+          --email admin@cdp.local || true
+        airflow webserver
     restart: unless-stopped
 
   airflow-scheduler:
@@ -407,6 +440,8 @@ services:
       - cdp-network
     depends_on:
       airflow-postgres:
+        condition: service_healthy
+      starrocks:
         condition: service_healthy
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
