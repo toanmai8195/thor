@@ -24,7 +24,7 @@ StarRocks đọc qua **external catalog** — không copy data, không có nativ
 
 ---
 
-### Silver: `tracking.silver_payments` (StarRocks native) [future]
+### Silver: `tracking.silver_payments` (StarRocks native)
 
 dbt transform từ `iceberg_catalog.bronze.payments`. Cùng logic normalize với CH Silver.
 
@@ -43,7 +43,7 @@ dbt transform từ `iceberg_catalog.bronze.payments`. Cùng logic normalize vớ
 
 ---
 
-### Gold: `analytics.gold_revenue` (StarRocks native) [future]
+### Gold: `analytics.gold_revenue` (StarRocks native)
 
 Aggregated revenue metrics theo ngày. Rebuild bởi dbt_starrocks.
 
@@ -89,7 +89,7 @@ GROUP BY minute
 ORDER BY minute DESC;
 ```
 
-### Gold queries [future — sau khi dbt Silver + Gold chạy]
+### Gold queries
 
 ```sql
 -- Revenue theo ngày (30 ngày gần nhất)
@@ -132,7 +132,7 @@ SELECT COUNT(*) FROM iceberg_catalog.bronze.payments WHERE payment_date = CURREN
 -- Chênh lệch = số rows Flink chưa flush vào Iceberg (buffered trong checkpoint)
 ```
 
-### Kiểm tra Silver drop rate [future]
+### Kiểm tra Silver drop rate
 
 ```sql
 -- So sánh Bronze vs Silver (sau khi dbt chạy)

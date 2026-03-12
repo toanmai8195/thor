@@ -21,9 +21,9 @@ Hệ thống tracking thanh toán theo **Dual-Pipeline Medallion Architecture**.
     CH: silver_events                    │
               │                   SR Iceberg ext catalog
          Superset                   = "SR Bronze"
-       (realtime)                        │ [future] dbt
+       (realtime)                        │ dbt (15min)
                                   SR: silver_payments
-                                         │ [future] dbt
+                                         │ dbt (daily 02:00 UTC)
                                   SR: gold_revenue
 ```
 
@@ -32,7 +32,8 @@ Hệ thống tracking thanh toán theo **Dual-Pipeline Medallion Architecture**.
 | Latency | ~1 phút | ~1 phút (Flink checkpoint) |
 | Dùng cho | Realtime monitoring | Historical analysis, BI, segmentation |
 | Bronze storage | ClickHouse MergeTree | Apache Iceberg / Parquet (MinIO) |
-| Silver transform | dbt-clickhouse (Airflow) | dbt-starrocks (future) |
+| Silver transform | dbt-clickhouse (Airflow, 1min) | dbt-starrocks (Airflow, 15min) |
+| Gold | — | dbt-starrocks (Airflow, daily) |
 
 ---
 
