@@ -1,0 +1,23 @@
+name: 'dbt_cdp_silver'
+version: '1.0.0'
+config-version: 2
+
+profile: 'cdp_silver'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# =============================================================================
+# MODEL CONFIGURATIONS
+# =============================================================================
+# Silver layer: incremental UPSERT vào cdp.silver_login (PRIMARY KEY table)
+# =============================================================================
+models:
+  dbt_cdp_silver:
+    silver:
+      +materialized: incremental
+      +on_schema_change: ignore

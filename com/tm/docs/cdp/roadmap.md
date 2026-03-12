@@ -1,0 +1,309 @@
+# CDP DW — Roadmap
+
+Xây dựng Data Warehouse cho **Customer Data Platform (CDP)** theo Medallion Architecture.
+
+Reuse toàn bộ flow của Revenue DW:
+`Kafka → Flink → Iceberg (Bronze) → StarRocks (Silver → Gold) → dbt → Superset`
+
+---
+
+## Tổng quan 7 bước
+
+| Bước | Tên | Status | Ghi chú |
+|------|-----|--------|---------|
+| 1 | [Login Event (first source)](#bước-1-login-event) | ✅ Done | Full flow, 1 event type |
+| 2 | [Metadata Layer](#bước-2-metadata-layer) | ⬜ Planned | Registry tự động hoá multi-source |
+| 3 | [Multi Data Sources](#bước-3-multi-data-sources) | ⬜ Planned | View, click, payment, search |
+| 4 | [Identity Resolution](#bước-4-identity-resolution) | ⬜ Planned | Silver layer — anonymous_id → user_id |
+| 5 | [Unified User Profile (360°)](#bước-5-unified-user-profile) | ⬜ Planned | Core CDP output — 1 row/user |
+| 6 | [User Segmentation](#bước-6-user-segmentation) | ⬜ Planned | Dynamic segments |
+| 7 | [Data Activation / Export](#bước-7-data-activation) | ⬜ Planned | Kafka output + downstream |
+
+---
+
+## Bước 1: Login Event
+
+**Mục tiêu:** Validate toàn bộ pipeline với 1 event source.
+
+**Thay đổi so với Revenue DW:**
+
+| | Revenue DW | CDP Step 1 |
+|-|------------|------------|
+| Event schema | PaymentEvent | LoginEvent |
+| Producer | `login-event-producer` | (mới) |
+| Ingestor | `tracking-ingestor` | `cdp-ingestor` (generic JSON) |
+| Topic raw | `payment-events` | `login-events` |
+| Topic ingest | `payment-events-ingest` | `login-events-ingest` |
+| Iceberg | `bronze.payments` | `bronze.login_events` |
+| SR Silver | `tracking.silver_payments` | `cdp.silver_login` |
+| SR Gold | `analytics.gold_revenue` | `cdp.gold_user_daily` |
+| Docker stack | `docker/dw/` | `docker/cdp/` |
+
+**Login Event schema:**
+```json
+{
+  "event_id":   "uuid",
+  "user_id":    12345,
+  "session_id": "sess-abc123",
+  "device_id":  "dev-xyz789",
+  "platform":   "ios",
+  "country":    "VN",
+  "event_date": "2025-01-01",
+  "login_at":   "2025-01-01T10:00:00.000Z"
+}
+```
+
+**Gold metrics (`cdp.gold_user_daily`, grain = 1 row/ngày):**
+
+| Column | Mô tả |
+|--------|-------|
+| `event_date` | Ngày (grain/key) |
+| `dau` | Daily Active Users (`COUNT DISTINCT user_id`) |
+| `total_logins` | Tổng login events |
+| `ios_logins` | Platform breakdown |
+| `android_logins` | Platform breakdown |
+| `web_logins` | Platform breakdown |
+| `unknown_logins` | Platform không xác định |
+| `unique_sessions` | `COUNT DISTINCT session_id` |
+| `unique_devices` | `COUNT DISTINCT device_id` |
+| `dbt_updated_at` | Thời gian dbt chạy |
+
+**Service URLs (CDP stack):**
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| Kafka UI | http://localhost:9082 | |
+| MinIO Console | http://localhost:9011 | minioadmin/minioadmin |
+| StarRocks MySQL | `mysql -h 127.0.0.1 -P 9031 -u root` | |
+| Flink Web UI | http://localhost:8085 | |
+| Airflow | http://localhost:8086 | admin/admin123 |
+| Superset | http://localhost:8089 | admin/admin |
+
+**Tài liệu:** `com/tm/docker/cdp/` + `com/tm/src/services/analytics-aggregator/cdp/`
+
+---
+
+## Bước 2: Metadata Layer
+
+**Mục tiêu:** Không cần sửa Flink/dbt/DAG khi thêm event source mới.
+
+**Vấn đề của Bước 1:** Mỗi event source = copy toàn bộ Flink SQL + dbt models + DAG.
+
+**Giải pháp — Event Registry:**
+- `cdp.event_registry` (StarRocks table): khai báo metadata của từng event source
+- Flink job template: parameterized SQL, đọc topic/table name từ registry
+- dbt macro: generate silver model từ schema definition
+- Airflow: 1 DAG duy nhất loop qua tất cả enabled sources trong registry
+
+```sql
+-- cdp.event_registry
+CREATE TABLE event_registry (
+    source_id     VARCHAR(50)  NOT NULL,   -- "login", "view", "click", "payment"
+    kafka_topic   VARCHAR(100) NOT NULL,   -- "login-events-ingest"
+    iceberg_table VARCHAR(100) NOT NULL,   -- "bronze.login_events"
+    sr_silver     VARCHAR(100) NOT NULL,   -- "cdp.silver_login"
+    sr_gold       VARCHAR(100),            -- "cdp.gold_user_daily"
+    enabled       BOOLEAN DEFAULT TRUE,
+    created_at    DATETIME
+)
+PRIMARY KEY (source_id)
+```
+
+---
+
+## Bước 3: Multi Data Sources
+
+**Mục tiêu:** Thêm các event sources còn lại bằng cách khai báo vào registry (Bước 2).
+
+**Event sources cần thêm:**
+
+| Source | Topic | Key Metrics |
+|--------|-------|-------------|
+| `view` | `view-events` | Page views, bounce rate, session depth |
+| `click` | `click-events` | CTR, element interaction heatmap |
+| `payment` | `payment-events` (reuse từ Revenue DW) | Conversion, revenue per user |
+| `search` | `search-events` | Search queries, zero-result rate |
+
+**Mỗi source cần:**
+1. Event schema definition (thêm vào event_registry)
+2. Event producer update (hoặc real app events)
+3. Bronze Iceberg table (auto-created bởi Flink template)
+4. Silver SR table (auto-created bởi dbt macro)
+5. Gold SR table (specific per source)
+
+---
+
+## Bước 4: Identity Resolution
+
+**Thuộc DW hay CDP?** → **Thuộc DW (Silver layer)**
+
+**Vấn đề:** Cùng 1 user có thể:
+- Login từ nhiều devices (device_id khác nhau)
+- Có session trước khi login (anonymous_id → user_id mapping)
+- Login bằng nhiều platforms (ios + web + android)
+
+**Giải pháp — Identity Graph trong Silver:**
+
+```
+Bronze events: anonymous_id, session_id, device_id, user_id (có thể null trước login)
+                    ↓ dbt Silver transform
+cdp.identity_graph  ← bảng mapping: identity_key → canonical_user_id
+                    ↓
+cdp.silver_* tables ← tất cả enriched với canonical_user_id
+```
+
+**Schema `cdp.identity_graph`:**
+
+| Column | Mô tả |
+|--------|-------|
+| `identity_key` | anonymous_id / session_id / device_id |
+| `identity_type` | anonymous_id / session / device |
+| `canonical_user_id` | user_id đã xác định (từ login event) |
+| `first_seen_at` | Lần đầu tiên thấy |
+| `last_seen_at` | Lần cuối thấy |
+| `confidence` | DECIMAL — mức độ tin cậy của mapping |
+
+**Logic:**
+1. Khi có login event: `session_id → user_id` mapping được tạo
+2. Pre-login events cùng session_id → retroactively assign user_id
+3. Cùng device_id đăng nhập nhiều accounts → track lịch sử
+
+---
+
+## Bước 5: Unified User Profile
+
+**Tại sao cần bước này:**
+CDP = "360° single view of each customer". Sau khi có multi-source events + identity resolution,
+cần **aggregate tất cả behavioral signals thành 1 row per user** — đây là **core output của CDP**.
+
+**Schema `cdp.user_profiles` (grain = 1 row/user):**
+
+| Column | Type | Nguồn |
+|--------|------|-------|
+| `user_id` | BIGINT PK | — |
+| `first_seen_at` | DATETIME | MIN(login_at) across all events |
+| `last_seen_at` | DATETIME | MAX(event_at) across all events |
+| `total_sessions` | BIGINT | COUNT DISTINCT session_id |
+| `total_logins` | BIGINT | silver_login |
+| `total_views` | BIGINT | silver_view |
+| `total_clicks` | BIGINT | silver_click |
+| `total_purchases` | BIGINT | silver_payment |
+| `total_searches` | BIGINT | silver_search |
+| `ltv` | DECIMAL | SUM(amount) WHERE payment status='paid' |
+| `preferred_platform` | VARCHAR | platform có nhiều sessions nhất |
+| `country` | VARCHAR | country phổ biến nhất |
+| `is_active_30d` | BOOLEAN | last_seen trong 30 ngày |
+| `churn_risk` | VARCHAR | low/medium/high (rule-based) |
+| `dbt_updated_at` | DATETIME | — |
+
+**Schedule:** Full rebuild daily (data lớn, query phức tạp).
+
+---
+
+## Bước 6: User Segmentation
+
+**Tại sao cần bước này:**
+CDP không chỉ lưu data — cần **phân khúc users để phục vụ personalization, marketing automation, ads targeting**.
+
+**Tables:**
+
+```sql
+-- Định nghĩa segment (rule-based)
+cdp.segments (
+    segment_id   VARCHAR(50) PK,
+    name         VARCHAR(100),
+    description  TEXT,
+    rule_sql     TEXT,          -- SQL WHERE clause để filter từ user_profiles
+    is_active    BOOLEAN,
+    updated_at   DATETIME
+)
+
+-- User × Segment mapping
+cdp.user_segments (
+    user_id     BIGINT,
+    segment_id  VARCHAR(50),
+    entered_at  DATETIME,
+    exited_at   DATETIME,       -- NULL = vẫn trong segment
+    PRIMARY KEY (user_id, segment_id)
+)
+```
+
+**Ví dụ segments:**
+
+| Segment | Rule |
+|---------|------|
+| `high_value` | `ltv > 5000000 AND total_purchases >= 3` |
+| `churned` | `last_seen_at < NOW() - INTERVAL 30 DAY` |
+| `new_users` | `first_seen_at >= NOW() - INTERVAL 7 DAY` |
+| `mobile_first` | `preferred_platform IN ('ios', 'android')` |
+| `power_users` | `total_sessions >= 50 AND is_active_30d = TRUE` |
+
+**Airflow DAG:** `cdp_segmentation` — daily sau khi `user_profiles` rebuild xong.
+
+---
+
+## Bước 7: Data Activation
+
+**Tại sao cần bước này:**
+Segments cần được **export ra downstream systems** để thực sự có giá trị:
+push notification, ads targeting, email marketing, A/B testing, feature flags.
+
+**3 activation channels:**
+
+### 1. Direct Query (đơn giản nhất)
+Downstream service query thẳng StarRocks qua MySQL protocol:
+```sql
+SELECT user_id FROM cdp.user_segments
+WHERE segment_id = 'high_value' AND exited_at IS NULL;
+```
+
+### 2. Kafka Output Topic (event-driven)
+Khi segment membership thay đổi (Airflow trigger) → publish ra Kafka:
+- Topic: `cdp-segment-updates`
+- Schema: `{ user_id, segment_id, action: "entered"|"exited", timestamp }`
+- Downstream: push service, ads platform, CRM consume topic này
+
+### 3. Export API (future)
+REST endpoint wrapping StarRocks queries — cho 3rd party integrations không thể consume Kafka.
+
+**Note về scope:**
+- Channels 1 & 2: thuộc DW layer (dbt + Airflow + Flink output job)
+- Channel 3: thuộc CDP application layer (separate service)
+
+---
+
+## Kiến trúc tổng thể (sau Bước 7)
+
+```
+[Login] [View] [Click] [Payment] [Search]   ← event producers
+        │ Kafka: <source>-events
+        ▼
+   cdp-ingestor (generic JSON validate)
+        │ Kafka: <source>-events-ingest
+        ▼
+   Apache Flink (per-source job, checkpoint 60s)
+        │ Parquet files
+        ▼
+Iceberg: bronze.login_events / bronze.view_events / ...  (MinIO)
+        │ StarRocks external catalog
+        ▼
+  [Identity Resolution] → cdp.identity_graph
+        │ dbt Silver (per source, 15min)
+        ▼
+  cdp.silver_login / silver_view / silver_click / silver_payment / silver_search
+        │ dbt Gold (daily)
+        ▼
+  cdp.gold_user_daily / gold_page_views / ...
+        │ dbt Unified (daily)
+        ▼
+  cdp.user_profiles  ← 360° view per user
+        │ dbt Segmentation (daily)
+        ▼
+  cdp.user_segments  ← segment membership
+        │
+  ┌─────┴──────┐
+  │            │
+  ▼            ▼
+Superset  Kafka: cdp-segment-updates
+(BI)      (downstream activation)
+```

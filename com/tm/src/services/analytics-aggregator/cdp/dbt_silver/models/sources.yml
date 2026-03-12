@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: CDP Bronze layer — Apache Iceberg trên MinIO (Flink ghi, StarRocks đọc qua external catalog)
+    database: iceberg_catalog
+    schema: bronze
+    tables:
+      - name: login_events
+        description: Raw login events từ Flink (Parquet, commit mỗi 60s)
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]
+          - name: session_id
+            tests: [not_null]
+          - name: device_id
+            tests: [not_null]

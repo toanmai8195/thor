@@ -1,0 +1,11 @@
+load("//tools/rules:com_tm_container.bzl", "com_tm_go_image")
+
+com_tm_go_image(
+    name = "cdp-ingestor",
+    package_name = package_name(),
+    srcs = ["main.go"],
+    importpath = "thor/com/tm/src/services/cdp-ingestor",
+    deps = [
+        "@com_github_ibm_sarama//:sarama",
+    ],
+)

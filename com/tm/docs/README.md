@@ -1,71 +1,69 @@
-# Payment Revenue Analytics Platform
+# CDP DW — Customer Data Platform
 
-Hệ thống tracking thanh toán theo **Dual-Pipeline Medallion Architecture**.
+Hệ thống **Customer Data Platform** theo Medallion Architecture.
 
 ```
-                   event-producer (~500 events/s)
-                           │ Kafka: payment-events
-                           ▼
-                  tracking-ingestor (validate)       ← single validation gate
-                           │ Kafka: payment-events-ingest
-              ┌────────────┴──────────────┐
-              │                           │
-              ▼                           ▼
-   LUỒNG 1: REALTIME          LUỒNG 2: WAREHOUSE (DW)
-     (ClickHouse)                (Iceberg + StarRocks)
-              │                           │
-      CH Kafka Engine            Flink (checkpoint 60s)
-              │                           │
-    CH: payments_bronze         Iceberg: bronze/payments
-              │ dbt (1min)             (MinIO, Parquet)
-    CH: silver_events                    │
-              │                   SR Iceberg ext catalog
-         Superset                   = "SR Bronze"
-       (realtime)                        │ dbt (15min)
-                                  SR: silver_payments
-                                         │ dbt (daily 02:00 UTC)
-                                  SR: gold_revenue
+     login-event-producer (~500 events/s)
+                 │ Kafka: login-events
+                 ▼
+        cdp-ingestor (validate JSON)
+                 │ Kafka: login-events-ingest
+                 ▼
+    Apache Flink (checkpoint 60s, exactly-once)
+                 │ Parquet files
+                 ▼
+  Iceberg: bronze/login_events (MinIO)
+                 │ StarRocks external catalog
+                 ▼
+iceberg_catalog.bronze.login_events   ← Bronze
+                 │ dbt (3min)
+           cdp.silver_login           ← Silver
+                 │ dbt (3min)
+        cdp.gold_user_daily           ← Gold
+                 │
+             Superset
 ```
 
-| | Luồng 1 (ClickHouse) | Luồng 2 (StarRocks) |
-|-|---------------------|---------------------|
-| Latency | ~1 phút | ~1 phút (Flink checkpoint) |
-| Dùng cho | Realtime monitoring | Historical analysis, BI, segmentation |
-| Bronze storage | ClickHouse MergeTree | Apache Iceberg / Parquet (MinIO) |
-| Silver transform | dbt-clickhouse (Airflow, 1min) | dbt-starrocks (Airflow, 15min) |
-| Gold | — | dbt-starrocks (Airflow, daily) |
+| Layer | Table | Mô tả |
+|-------|-------|-------|
+| Bronze | `iceberg_catalog.bronze.login_events` | Raw events, Flink ghi mỗi 60s (Parquet, MinIO) |
+| Silver | `cdp.silver_login` | Normalized platform/country, UPSERT by (event_id, event_date) |
+| Gold | `cdp.gold_user_daily` | DAU, sessions, platform breakdown theo ngày |
 
 ---
 
 ## Tài liệu
 
-### Luồng 1: Realtime (ClickHouse)
-
 | Doc | Nội dung |
 |-----|---------|
-| [realtime/architecture.md](realtime/architecture.md) | Flow, tech stack, CH Kafka Engine, dbt, Airflow |
-| [realtime/data.md](realtime/data.md) | Schemas (Bronze + Silver), analytics queries, data quality |
-| [realtime/setup.md](realtime/setup.md) | Manual setup, kiểm tra, troubleshooting |
-
-### Luồng 2: Warehouse DW (Iceberg + StarRocks)
-
-| Doc | Nội dung |
-|-----|---------|
-| [dw/architecture.md](dw/architecture.md) | Flow, tech stack, Flink, Iceberg, StarRocks ext catalog |
-| [dw/data.md](dw/data.md) | Schemas (Iceberg Bronze + SR Silver/Gold), analytics queries |
-| [dw/setup.md](dw/setup.md) | Manual setup, kiểm tra, troubleshooting |
-
+| [cdp/roadmap.md](cdp/roadmap.md) | Roadmap 7 bước: login → metadata layer → multi-source → identity resolution → user profile → segmentation → activation |
 
 ---
 
 ## Quick start
 
 ```bash
-# Luồng 1: Realtime
-cd com/tm/docker/realtime && docker compose up -d
+# Build Go images
+bazel run //com/tm/src/services/login-event-producer:login-event-producer_docker
+bazel run //com/tm/src/services/cdp-ingestor:cdp-ingestor_docker
 
-# Luồng 2: Warehouse DW
-cd com/tm/docker/dw && docker compose up -d
+# Start CDP stack
+cd com/tm/docker/cdp && docker compose up -d
 ```
 
-Xem [realtime/setup.md](realtime/setup.md) hoặc [dw/setup.md](dw/setup.md) để biết các bước chi tiết.
+Xem [cdp/roadmap.md](cdp/roadmap.md) để biết chi tiết từng bước.
+
+---
+
+## Service URLs
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Kafka UI | http://localhost:9082 | — |
+| MinIO Console | http://localhost:9011 | `minioadmin` / `minioadmin` |
+| MinIO S3 API | http://localhost:9010 | — |
+| Flink Web UI | http://localhost:8085 | — |
+| StarRocks MySQL | `mysql -h 127.0.0.1 -P 9031 -u root` | `root` / (trống) |
+| StarRocks FE HTTP | http://localhost:8031 | — |
+| Airflow | http://localhost:8086 | `admin` / `admin123` |
+| Superset | http://localhost:8089 | `admin` / `admin` |

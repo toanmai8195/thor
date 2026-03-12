@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: silver
+    description: CDP Silver layer — cdp.silver_login (StarRocks native, populated by dbt_cdp_silver)
+    database: default_catalog
+    schema: cdp
+    tables:
+      - name: silver_login
+        description: Cleaned login events từ Iceberg Bronze (normalized platform/country)
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: platform
+            tests:
+              - accepted_values:
+                  values: [ios, android, web, unknown]
+          - name: country
+            tests: [not_null]

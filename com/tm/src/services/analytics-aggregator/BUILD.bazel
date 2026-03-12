@@ -1,44 +1,37 @@
 # =============================================================================
-# BUILD FILE - ANALYTICS AGGREGATOR (Medallion Pipeline)
+# BUILD FILE - ANALYTICS AGGREGATOR (CDP Medallion Pipeline)
 # =============================================================================
 # Targets:
-#   bazel test :dag_validation_test   → validate DAG syntax
-#   bazel run  :run_sync              → sync silver CH → StarRocks
+#   bazel test :dag_validation_test   → validate CDP DAG syntax
 # =============================================================================
 
-load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
 
 py_library(
-    name = "dags_lib",
-    srcs = glob(["dags/*.py"]),
-    visibility = ["//visibility:public"],
-)
-
-py_library(
-    name = "sync_lib",
-    srcs = glob(["sync/*.py"]),
+    name = "cdp_dags_lib",
+    srcs = glob(["cdp/dags/*.py"]),
     visibility = ["//visibility:public"],
 )
 
 filegroup(
-    name = "dag_files",
-    srcs = glob(["dags/*.py"]),
+    name = "cdp_dag_files",
+    srcs = glob(["cdp/dags/*.py"]),
     visibility = ["//visibility:public"],
 )
 
 filegroup(
-    name = "dbt_clickhouse_files",
+    name = "cdp_dbt_silver_files",
     srcs = glob(
-        ["dbt_clickhouse/**/*.sql", "dbt_clickhouse/**/*.yml", "dbt_clickhouse/**/*.yaml"],
+        ["cdp/dbt_silver/**/*.sql", "cdp/dbt_silver/**/*.yml", "cdp/dbt_silver/**/*.yaml"],
         allow_empty = True,
     ),
     visibility = ["//visibility:public"],
 )
 
 filegroup(
-    name = "dbt_starrocks_files",
+    name = "cdp_dbt_gold_files",
     srcs = glob(
-        ["dbt_starrocks/**/*.sql", "dbt_starrocks/**/*.yml", "dbt_starrocks/**/*.yaml"],
+        ["cdp/dbt_gold/**/*.sql", "cdp/dbt_gold/**/*.yml", "cdp/dbt_gold/**/*.yaml"],
         allow_empty = True,
     ),
     visibility = ["//visibility:public"],
@@ -48,21 +41,6 @@ py_test(
     name = "dag_validation_test",
     srcs = ["tests/test_dag_validation.py"],
     main = "tests/test_dag_validation.py",
-    deps = [":dags_lib", ":sync_lib"],
-    data = glob(["dags/*.py"]),
-)
-
-py_binary(
-    name = "run_dag",
-    srcs = ["scripts/run_dag_locally.py"],
-    main = "scripts/run_dag_locally.py",
-    deps = [":dags_lib", ":sync_lib"],
-    data = [":dag_files", ":dbt_clickhouse_files", ":dbt_starrocks_files"],
-)
-
-py_binary(
-    name = "run_sync",
-    srcs = ["sync/ch_to_starrocks.py"],
-    main = "sync/ch_to_starrocks.py",
-    deps = [":sync_lib"],
+    deps = [":cdp_dags_lib"],
+    data = [":cdp_dag_files"],
 )
