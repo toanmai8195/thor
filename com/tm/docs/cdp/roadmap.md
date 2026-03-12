@@ -2,8 +2,9 @@
 
 Xây dựng Data Warehouse cho **Customer Data Platform (CDP)** theo Medallion Architecture.
 
-Reuse toàn bộ flow của Revenue DW:
-`Kafka → Flink → Iceberg (Bronze) → StarRocks (Silver → Gold) → dbt → Superset`
+Dual-pipeline: **Realtime** (ClickHouse) + **DW** (Iceberg/StarRocks) song song từ cùng Kafka topic.
+
+`Kafka → [CH Kafka Engine → ClickHouse silver (1min)] || [Flink → Iceberg → StarRocks silver+gold (3min)]`
 
 ---
 
@@ -23,26 +24,29 @@ Reuse toàn bộ flow của Revenue DW:
 
 ## Bước 1: Login Event
 
-**Mục tiêu:** Validate toàn bộ pipeline với 1 event source.
+**Mục tiêu:** Validate toàn bộ dual-pipeline với 1 event source — bao gồm cả Realtime (ClickHouse) và DW (Iceberg/StarRocks).
 
-**Thay đổi so với Revenue DW:**
+### Dual-Pipeline Architecture
 
-| | Revenue DW | CDP Step 1 |
-|-|------------|------------|
-| Event schema | PaymentEvent | LoginEvent |
-| Producer | `login-event-producer` | (mới) |
-| Ingestor | `tracking-ingestor` | `cdp-ingestor` (generic JSON) |
-| Topic raw | `payment-events` | `login-events` |
-| Topic ingest | `payment-events-ingest` | `login-events-ingest` |
-| Iceberg | `bronze.payments` | `bronze.login_events` |
-| SR Silver | `tracking.silver_payments` | `cdp.silver_login` |
-| SR Gold | `analytics.gold_revenue` | `cdp.gold_user_daily` |
-| Docker stack | `docker/dw/` | `docker/cdp/` |
+```
+Kafka: login-events-ingest
+        │
+  ┌─────┴────────────────────────────┐
+  │ group: ch-cdp-login              │ group: flink-iceberg-cdp-login
+  ▼                                  ▼
+LUỒNG 1: REALTIME               LUỒNG 2: DW
+ClickHouse Kafka Engine         Apache Flink (checkpoint 60s)
+cdp.login_bronze                Iceberg: bronze/login_events
+dbt (1min, append)              dbt-starrocks (3min, UPSERT)
+cdp.silver_login (CH)           cdp.silver_login (SR)
+                                cdp.gold_user_daily
+```
 
-**Login Event schema:**
+### Login Event Schema
+
 ```json
 {
-  "event_id":   "uuid",
+  "event_id":   "uuid-v4",
   "user_id":    12345,
   "session_id": "sess-abc123",
   "device_id":  "dev-xyz789",
@@ -53,33 +57,25 @@ Reuse toàn bộ flow của Revenue DW:
 }
 ```
 
-**Gold metrics (`cdp.gold_user_daily`, grain = 1 row/ngày):**
+Producer: ~500 events/s, 100k unique users, platform distribution ios(30%)/android(40%)/web(20%)/unknown(10%).
 
-| Column | Mô tả |
-|--------|-------|
-| `event_date` | Ngày (grain/key) |
-| `dau` | Daily Active Users (`COUNT DISTINCT user_id`) |
-| `total_logins` | Tổng login events |
-| `ios_logins` | Platform breakdown |
-| `android_logins` | Platform breakdown |
-| `web_logins` | Platform breakdown |
-| `unknown_logins` | Platform không xác định |
-| `unique_sessions` | `COUNT DISTINCT session_id` |
-| `unique_devices` | `COUNT DISTINCT device_id` |
-| `dbt_updated_at` | Thời gian dbt chạy |
+### Services & Files
 
-**Service URLs (CDP stack):**
+| Thành phần | Path |
+|-----------|------|
+| Go producer | `com/tm/src/services/login-event-producer/` |
+| Go ingestor | `com/tm/src/services/cdp-ingestor/` |
+| Docker stack | `com/tm/docker/cdp/` |
+| dbt Realtime | `com/tm/src/services/analytics-aggregator/cdp/dbt_realtime/` |
+| dbt Silver | `com/tm/src/services/analytics-aggregator/cdp/dbt_silver/` |
+| dbt Gold | `com/tm/src/services/analytics-aggregator/cdp/dbt_gold/` |
+| Airflow DAGs | `com/tm/src/services/analytics-aggregator/cdp/dags/` |
 
-| Service | URL | Notes |
-|---------|-----|-------|
-| Kafka UI | http://localhost:9082 | |
-| MinIO Console | http://localhost:9011 | minioadmin/minioadmin |
-| StarRocks MySQL | `mysql -h 127.0.0.1 -P 9031 -u root` | |
-| Flink Web UI | http://localhost:8085 | |
-| Airflow | http://localhost:8086 | admin/admin123 |
-| Superset | http://localhost:8089 | admin/admin |
+### Tài liệu chi tiết
 
-**Tài liệu:** `com/tm/docker/cdp/` + `com/tm/src/services/analytics-aggregator/cdp/`
+- [Setup guide](setup.md)
+- [Luồng 1: Realtime (ClickHouse)](pipeline-realtime.md)
+- [Luồng 2: DW (Iceberg + StarRocks)](pipeline-dw.md)
 
 ---
 

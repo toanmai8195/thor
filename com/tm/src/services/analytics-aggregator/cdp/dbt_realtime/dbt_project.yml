@@ -1,0 +1,28 @@
+name: 'dbt_cdp_realtime'
+version: '1.0.0'
+config-version: 2
+
+profile: 'cdp_realtime'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  dbt_cdp_realtime:
+    silver:
+      +materialized: incremental
+      +incremental_strategy: append
+      +on_schema_change: ignore
+
+      silver_login:
+        +engine: "ReplacingMergeTree()"
+        +order_by: "['event_date', 'user_id', 'event_id']"
+        +unique_key: event_id
+        +partition_by:
+          field: event_date
+          data_type: date
+          granularity: month

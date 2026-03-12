@@ -1,5 +1,5 @@
 # =============================================================================
-# DOCKER COMPOSE — CDP PIPELINE (Step 1: Login Events)
+# DOCKER COMPOSE — CDP PIPELINE (Dual-Pipeline: Realtime + DW)
 # =============================================================================
 #
 #   login-event-producer (~500 events/s)
@@ -7,27 +7,33 @@
 #           ▼
 #   cdp-ingestor (validate JSON + event_id)
 #           │ Kafka: login-events-ingest
-#           ▼
-#   Apache Flink (checkpoint 60s, exactly-once)
-#           ↓ Parquet files
-#   Apache Iceberg: bronze/login_events
-#   (HadoopCatalog, s3a://lakehouse/warehouse/, MinIO)
-#           ↓ StarRocks external catalog (query-on-read)
-#   iceberg_catalog.bronze.login_events   ← "SR Bronze"
-#           ↓ dbt-starrocks (Airflow, mỗi 3 phút)
-#   cdp.silver_login                      ← SR native PRIMARY KEY table
-#           ↓ dbt-starrocks (Airflow, mỗi 3 phút)
-#   cdp.gold_user_daily
+#     ┌─────┴──────────────────────┐
+#     │                            │
+#     ▼                            ▼
+# LUỒNG 1: REALTIME          LUỒNG 2: DW
+#   (ClickHouse)          (Iceberg + StarRocks)
+#     │                            │
+# CH Kafka Engine         Flink (checkpoint 60s)
+#     │                            │
+# cdp.login_bronze        Iceberg: bronze/login_events
+#     │ dbt (1min)              (MinIO, Parquet)
+# cdp.silver_login                 │
+#     │                    SR Iceberg ext catalog
+#  Superset                        │ dbt (3min)
+# (realtime)           cdp.silver_login (SR native)
+#                                  │ dbt (3min)
+#                         cdp.gold_user_daily
 #
 # =============================================================================
-# PORTS (khác DW để chạy song song):
-#   kafka-ui  : 9082   (DW: 8082)
-#   minio S3  : 9010   (DW: 9000)
-#   minio UI  : 9011   (DW: 9001)
-#   starrocks : 9031   (DW: 9030)
-#   flink     : 8085   (DW: 8083)
-#   airflow   : 8086   (DW: 8084)
-#   superset  : 8089   (DW: 8088)
+# PORTS:
+#   kafka-ui    : 9082
+#   clickhouse  : 8124 (HTTP)
+#   minio S3    : 9010
+#   minio UI    : 9011
+#   starrocks   : 9031
+#   flink       : 8085
+#   airflow     : 8086
+#   superset    : 8089
 # =============================================================================
 
 version: '3.8'
@@ -39,6 +45,8 @@ networks:
 
 volumes:
   cdp-kafka-data:
+  cdp-clickhouse-data:
+  cdp-clickhouse-logs:
   cdp-minio-data:
   cdp-starrocks-fe-meta:
   cdp-starrocks-be-storage:
@@ -95,6 +103,44 @@ services:
       DYNAMIC_CONFIG_ENABLED: "true"
     depends_on:
       - kafka
+
+  # ===========================================================================
+  # CLICKHOUSE — Realtime Bronze + Silver (Luồng 1)
+  # HTTP: http://localhost:8124  |  Native: clickhouse:9000 (internal only)
+  # Init scripts: ./clickhouse/init/ (chạy tự động lần đầu)
+  # ===========================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.2
+    container_name: cdp-clickhouse
+    hostname: clickhouse
+    networks:
+      - cdp-network
+    ports:
+      - "8124:8123"   # HTTP (dbt, Superset, curl)
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - cdp-clickhouse-data:/var/lib/clickhouse
+      - cdp-clickhouse-logs:/var/log/clickhouse-server
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.d/custom.xml:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
 
   # ===========================================================================
   # EVENT PRODUCER & CDP INGESTOR

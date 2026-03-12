@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: CDP Realtime Bronze — cdp.login_bronze (ClickHouse MergeTree, Kafka Engine ghi)
+    database: cdp
+    schema: cdp
+    tables:
+      - name: login_bronze
+        description: Raw login events từ Kafka Engine (CH consume login-events-ingest)
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]

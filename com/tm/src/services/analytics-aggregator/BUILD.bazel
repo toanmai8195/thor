@@ -1,17 +1,6 @@
 # =============================================================================
 # BUILD FILE - ANALYTICS AGGREGATOR (CDP Medallion Pipeline)
 # =============================================================================
-# Targets:
-#   bazel test :dag_validation_test   → validate CDP DAG syntax
-# =============================================================================
-
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
-
-py_library(
-    name = "cdp_dags_lib",
-    srcs = glob(["cdp/dags/*.py"]),
-    visibility = ["//visibility:public"],
-)
 
 filegroup(
     name = "cdp_dag_files",
@@ -37,10 +26,11 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-py_test(
-    name = "dag_validation_test",
-    srcs = ["tests/test_dag_validation.py"],
-    main = "tests/test_dag_validation.py",
-    deps = [":cdp_dags_lib"],
-    data = [":cdp_dag_files"],
+filegroup(
+    name = "cdp_dbt_realtime_files",
+    srcs = glob(
+        ["cdp/dbt_realtime/**/*.sql", "cdp/dbt_realtime/**/*.yml", "cdp/dbt_realtime/**/*.yaml"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
 )

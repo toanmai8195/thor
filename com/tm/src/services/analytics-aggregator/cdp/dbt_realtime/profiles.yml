@@ -1,0 +1,30 @@
+cdp_realtime:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      schema: cdp
+      host: "{{ env_var('CLICKHOUSE_HOST', 'clickhouse') }}"
+      port: 8123
+      user: "{{ env_var('CLICKHOUSE_USER', 'default') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD', '') }}"
+      secure: false
+      threads: 4
+      connect_timeout: 10
+      send_receive_timeout: 300
+      sync_request_timeout: 5
+      custom_settings:
+        max_execution_time: 300
+        max_memory_usage: 10000000000
+
+    prod:
+      type: clickhouse
+      schema: cdp
+      host: "{{ env_var('CLICKHOUSE_HOST') }}"
+      port: "{{ env_var('CLICKHOUSE_HTTP_PORT', '8123') | int }}"
+      user: "{{ env_var('CLICKHOUSE_USER', 'default') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD', '') }}"
+      secure: true
+      threads: 8
+      connect_timeout: 10
+      send_receive_timeout: 600
