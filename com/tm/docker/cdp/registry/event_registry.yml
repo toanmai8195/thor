@@ -11,44 +11,134 @@
 # =============================================================================
 
 sources:
+
+  # ---------------------------------------------------------------------------
+  # login — Step 1
+  # ---------------------------------------------------------------------------
   - source_id: login
-    description: "User login events — first CDP data source"
+    description: "User login events"
     kafka_topic: login-events-ingest
     flink_consumer_group: flink-iceberg-cdp-login
     ch_consumer_group: ch-cdp-login
     iceberg_database: bronze
     iceberg_table: login_events
     sr_silver_model: silver_login
-    sr_gold_model: gold_user_daily         # null nếu chưa có gold
+    sr_gold_model: gold_user_daily
     partition_field: event_date
     enabled: true
     fields:
-      - {name: event_id,   type: STRING,  comment: "UUID v4"}
-      - {name: user_id,    type: BIGINT,  comment: "User ID"}
-      - {name: session_id, type: STRING,  comment: "Session UUID"}
-      - {name: device_id,  type: STRING,  comment: "Device UUID"}
-      - {name: platform,   type: STRING,  comment: "ios|android|web|unknown"}
-      - {name: country,    type: STRING,  comment: "Country code (VN/US/SG/...)"}
-      - {name: event_date, type: STRING,  comment: "YYYY-MM-DD"}
-      - {name: login_at,   type: STRING,  comment: "ISO8601 timestamp"}
+      - {name: event_id,   type: STRING, comment: "UUID v4"}
+      - {name: user_id,    type: BIGINT, comment: "User ID"}
+      - {name: session_id, type: STRING, comment: "Session UUID"}
+      - {name: device_id,  type: STRING, comment: "Device UUID"}
+      - {name: platform,   type: STRING, comment: "ios|android|web|unknown"}
+      - {name: country,    type: STRING, comment: "Country code (VN/US/SG/...)"}
+      - {name: event_date, type: STRING, comment: "YYYY-MM-DD"}
+      - {name: login_at,   type: STRING, comment: "ISO8601 timestamp"}
 
-  # Thêm source mới ở đây — ví dụ (Step 3):
-  # - source_id: view
-  #   description: "Page view events"
-  #   kafka_topic: view-events-ingest
-  #   flink_consumer_group: flink-iceberg-cdp-view
-  #   ch_consumer_group: ch-cdp-view
-  #   iceberg_database: bronze
-  #   iceberg_table: view_events
-  #   sr_silver_model: silver_view
-  #   sr_gold_model: null
-  #   partition_field: event_date
-  #   enabled: false                       # bật khi ready
-  #   fields:
-  #     - {name: event_id,   type: STRING}
-  #     - {name: user_id,    type: BIGINT}
-  #     - {name: session_id, type: STRING}
-  #     - {name: page_url,   type: STRING}
-  #     - {name: referrer,   type: STRING}
-  #     - {name: event_date, type: STRING}
-  #     - {name: viewed_at,  type: STRING}
+  # ---------------------------------------------------------------------------
+  # view — Step 3
+  # ---------------------------------------------------------------------------
+  - source_id: view
+    description: "Page view events"
+    kafka_topic: view-events-ingest
+    flink_consumer_group: flink-iceberg-cdp-view
+    ch_consumer_group: ch-cdp-view
+    iceberg_database: bronze
+    iceberg_table: view_events
+    sr_silver_model: silver_view
+    sr_gold_model: gold_page_daily
+    partition_field: event_date
+    enabled: true
+    fields:
+      - {name: event_id,   type: STRING, comment: "UUID v4"}
+      - {name: user_id,    type: BIGINT, comment: "User ID"}
+      - {name: session_id, type: STRING, comment: "Session UUID"}
+      - {name: device_id,  type: STRING, comment: "Device UUID"}
+      - {name: platform,   type: STRING, comment: "ios|android|web|unknown"}
+      - {name: country,    type: STRING, comment: "Country code"}
+      - {name: page_url,   type: STRING, comment: "URL path, e.g. /products/123"}
+      - {name: referrer,   type: STRING, comment: "Referring URL, empty if direct"}
+      - {name: event_date, type: STRING, comment: "YYYY-MM-DD"}
+      - {name: viewed_at,  type: STRING, comment: "ISO8601 timestamp"}
+
+  # ---------------------------------------------------------------------------
+  # click — Step 3
+  # ---------------------------------------------------------------------------
+  - source_id: click
+    description: "UI element click/interaction events"
+    kafka_topic: click-events-ingest
+    flink_consumer_group: flink-iceberg-cdp-click
+    ch_consumer_group: ch-cdp-click
+    iceberg_database: bronze
+    iceberg_table: click_events
+    sr_silver_model: silver_click
+    sr_gold_model: null
+    partition_field: event_date
+    enabled: true
+    fields:
+      - {name: event_id,     type: STRING, comment: "UUID v4"}
+      - {name: user_id,      type: BIGINT, comment: "User ID"}
+      - {name: session_id,   type: STRING, comment: "Session UUID"}
+      - {name: device_id,    type: STRING, comment: "Device UUID"}
+      - {name: platform,     type: STRING, comment: "ios|android|web|unknown"}
+      - {name: country,      type: STRING, comment: "Country code"}
+      - {name: page_url,     type: STRING, comment: "Page where click happened"}
+      - {name: element_id,   type: STRING, comment: "DOM/component ID, e.g. btn-buy-now"}
+      - {name: element_type, type: STRING, comment: "button|link|image|other"}
+      - {name: event_date,   type: STRING, comment: "YYYY-MM-DD"}
+      - {name: clicked_at,   type: STRING, comment: "ISO8601 timestamp"}
+
+  # ---------------------------------------------------------------------------
+  # payment — Step 3
+  # ---------------------------------------------------------------------------
+  - source_id: payment
+    description: "Payment transaction events"
+    kafka_topic: payment-events-ingest
+    flink_consumer_group: flink-iceberg-cdp-payment
+    ch_consumer_group: ch-cdp-payment
+    iceberg_database: bronze
+    iceberg_table: payment_events
+    sr_silver_model: silver_payment
+    sr_gold_model: null
+    partition_field: event_date
+    enabled: true
+    fields:
+      - {name: event_id,       type: STRING, comment: "UUID v4"}
+      - {name: user_id,        type: BIGINT, comment: "User ID"}
+      - {name: session_id,     type: STRING, comment: "Session UUID"}
+      - {name: order_id,       type: STRING, comment: "Order UUID — required"}
+      - {name: amount,         type: BIGINT, comment: "Amount in smallest currency unit"}
+      - {name: currency,       type: STRING, comment: "VND|USD|SGD"}
+      - {name: payment_method, type: STRING, comment: "momo|vnpay|visa|mastercard|other"}
+      - {name: status,         type: STRING, comment: "paid|pending|failed|refunded"}
+      - {name: platform,       type: STRING, comment: "ios|android|web|unknown"}
+      - {name: country,        type: STRING, comment: "Country code"}
+      - {name: event_date,     type: STRING, comment: "YYYY-MM-DD"}
+      - {name: paid_at,        type: STRING, comment: "ISO8601 timestamp"}
+
+  # ---------------------------------------------------------------------------
+  # search — Step 3
+  # ---------------------------------------------------------------------------
+  - source_id: search
+    description: "Search query events"
+    kafka_topic: search-events-ingest
+    flink_consumer_group: flink-iceberg-cdp-search
+    ch_consumer_group: ch-cdp-search
+    iceberg_database: bronze
+    iceberg_table: search_events
+    sr_silver_model: silver_search
+    sr_gold_model: gold_search_daily
+    partition_field: event_date
+    enabled: true
+    fields:
+      - {name: event_id,          type: STRING, comment: "UUID v4"}
+      - {name: user_id,           type: BIGINT, comment: "User ID"}
+      - {name: session_id,        type: STRING, comment: "Session UUID"}
+      - {name: platform,          type: STRING, comment: "ios|android|web|unknown"}
+      - {name: country,           type: STRING, comment: "Country code"}
+      - {name: query,             type: STRING, comment: "Search query text"}
+      - {name: result_count,      type: BIGINT, comment: "Number of results returned"}
+      - {name: clicked_result_id, type: STRING, comment: "Product/item clicked, empty if none"}
+      - {name: event_date,        type: STRING, comment: "YYYY-MM-DD"}
+      - {name: searched_at,       type: STRING, comment: "ISO8601 timestamp"}

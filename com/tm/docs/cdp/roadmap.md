@@ -14,7 +14,7 @@ Dual-pipeline: **Realtime** (ClickHouse) + **DW** (Iceberg/StarRocks) song song 
 |------|-----|--------|---------|
 | 1 | [Login Event (first source)](#bước-1-login-event) | ✅ Done | Full flow, 1 event type |
 | 2 | [Metadata Layer](#bước-2-metadata-layer) | ✅ Done | Registry tự động hoá multi-source |
-| 3 | [Multi Data Sources](#bước-3-multi-data-sources) | ⬜ Planned | View, click, payment, search |
+| 3 | [Multi Data Sources](#bước-3-multi-data-sources) | ✅ Done | View, click, payment, search |
 | 4 | [Identity Resolution](#bước-4-identity-resolution) | ⬜ Planned | Silver layer — anonymous_id → user_id |
 | 5 | [Unified User Profile (360°)](#bước-5-unified-user-profile) | ⬜ Planned | Core CDP output — 1 row/user |
 | 6 | [User Segmentation](#bước-6-user-segmentation) | ⬜ Planned | Dynamic segments |
@@ -148,23 +148,46 @@ enabled              BOOLEAN           -- FALSE = skip trong pipeline
 
 ## Bước 3: Multi Data Sources
 
-**Mục tiêu:** Thêm các event sources còn lại bằng cách khai báo vào registry (Bước 2).
+**Mục tiêu:** Thêm 4 event sources mới bằng cách dùng Metadata Layer (Bước 2).
 
-**Event sources cần thêm:**
+### Sources đã thêm
 
-| Source | Topic | Key Metrics |
-|--------|-------|-------------|
-| `view` | `view-events` | Page views, bounce rate, session depth |
-| `click` | `click-events` | CTR, element interaction heatmap |
-| `payment` | `payment-events` (reuse từ Revenue DW) | Conversion, revenue per user |
-| `search` | `search-events` | Search queries, zero-result rate |
+| Source | Kafka Topic | Silver | Gold | Key Metrics |
+|--------|------------|--------|------|-------------|
+| `view` | `view-events-ingest` | `silver_view` | `gold_page_daily` | total_views, unique_viewers, direct vs referred |
+| `click` | `click-events-ingest` | `silver_click` | — | element_type CTR, page interaction |
+| `payment` | `payment-events-ingest` | `silver_payment` | — | amount, payment_method, status |
+| `search` | `search-events-ingest` | `silver_search` | `gold_search_daily` | zero_result_rate, click_through_rate |
 
-**Mỗi source cần:**
-1. Event schema definition (thêm vào event_registry)
-2. Event producer update (hoặc real app events)
-3. Bronze Iceberg table (auto-created bởi Flink template)
-4. Silver SR table (auto-created bởi dbt macro)
-5. Gold SR table (specific per source)
+### Phần CHUNG — tái dụng từ Bước 2, không cần viết lại
+
+| Thành phần | Cách tái dụng |
+|-----------|---------------|
+| Flink job | `./flink/submit_from_registry.sh <source>` — generate từ template |
+| Airflow DAG | Tự pick up source mới — không sửa DAG |
+| Macros | `normalize_platform/country/id`, `silver_incremental_filter` — dùng trong tất cả silver models |
+| Filter pattern | `event_id/user_id/event_date NOT NULL` — copy 3 dòng |
+
+### Phần RIÊNG — phải khai báo per-source
+
+| Thành phần | Lý do phải riêng |
+|-----------|-----------------|
+| `event_registry.yml` entry | Schema fields khác nhau per source |
+| `sources.yml` entry | Bronze table name khác nhau |
+| `silver_<source>.sql` | Field list + source-specific normalization logic |
+| `gold_<source>_daily.sql` | Aggregate metrics riêng của từng domain |
+| Unit tests (`schema.yml`) | Test source-specific logic (payment status, search result_count...) |
+
+### Source-specific normalization (ngoài macros)
+
+| Source | Logic riêng |
+|--------|-------------|
+| `view` | `referrer` empty → NULL (nullable, không phải 'unknown') |
+| `click` | `element_type` normalize: button/link/image/other |
+| `payment` | `currency` default VND, `payment_method` whitelist, `status` lifecycle, `amount > 0` |
+| `search` | `has_results` derived từ `result_count`, `clicked_result_id` nullable, `result_count < 0 → 0` |
+| `payment` | Không có `device_id` — transaction-level event |
+| `search` | Không có `device_id` — intent-level signal |
 
 ---
 

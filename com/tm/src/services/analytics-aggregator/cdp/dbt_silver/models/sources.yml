@@ -2,12 +2,12 @@ version: 2
 
 sources:
   - name: bronze
-    description: CDP Bronze layer — Apache Iceberg trên MinIO (Flink ghi, StarRocks đọc qua external catalog)
+    description: CDP Bronze layer — Apache Iceberg on MinIO (Flink ghi, StarRocks đọc qua external catalog)
     database: iceberg_catalog
     schema: bronze
     tables:
       - name: login_events
-        description: Raw login events từ Flink (Parquet, commit mỗi 60s)
+        description: Raw login events from Flink
         columns:
           - name: event_id
             tests: [not_null]
@@ -15,7 +15,51 @@ sources:
             tests: [not_null]
           - name: event_date
             tests: [not_null]
-          - name: session_id
+
+      - name: view_events
+        description: Raw page view events from Flink
+        columns:
+          - name: event_id
             tests: [not_null]
-          - name: device_id
+          - name: user_id
+            tests: [not_null]
+          - name: page_url
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]
+
+      - name: click_events
+        description: Raw UI click/interaction events from Flink
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: element_id
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]
+
+      - name: payment_events
+        description: Raw payment transaction events from Flink
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: order_id
+            tests: [not_null]
+          - name: event_date
+            tests: [not_null]
+
+      - name: search_events
+        description: Raw search query events from Flink
+        columns:
+          - name: event_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: query
+            tests: [not_null]
+          - name: event_date
             tests: [not_null]

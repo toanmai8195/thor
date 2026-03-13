@@ -128,3 +128,95 @@ unit_tests:
       rows:
         - {event_id: "e1", login_at: "2024-01-01T01:00:00.000Z"}
         - {event_id: "e2", login_at: "2024-01-01T00:30:00.000Z"}
+
+  # ---------------------------------------------------------------------------
+  # silver_view
+  # ---------------------------------------------------------------------------
+  - name: silver_view
+    description: Normalized page view events. referrer nullable (direct traffic).
+
+unit_tests:
+  # ... (existing silver_login tests above) ...
+
+  - name: test_view_empty_page_url_filtered
+    model: silver_view
+    given:
+      - input: source('bronze', 'view_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", page_url: "",  referrer: "", event_date: "2024-01-01", viewed_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", page_url: "/home", referrer: "", event_date: "2024-01-01", viewed_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e2", page_url: "/home"}
+
+  - name: test_view_empty_referrer_becomes_null
+    model: silver_view
+    given:
+      - input: source('bronze', 'view_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", page_url: "/home", referrer: "",         event_date: "2024-01-01", viewed_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", page_url: "/home", referrer: "/landing",  event_date: "2024-01-01", viewed_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", referrer: null}
+        - {event_id: "e2", referrer: "/landing"}
+
+  - name: test_click_element_type_normalization
+    model: silver_click
+    given:
+      - input: source('bronze', 'click_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", page_url: "/p", element_id: "btn-1", element_type: "BUTTON",    event_date: "2024-01-01", clicked_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", page_url: "/p", element_id: "img-1", element_type: "IMAGE",     event_date: "2024-01-01", clicked_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: "ios", country: "VN", page_url: "/p", element_id: "div-1", element_type: "container", event_date: "2024-01-01", clicked_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", element_type: "button"}
+        - {event_id: "e2", element_type: "image"}
+        - {event_id: "e3", element_type: "other"}
+
+  - name: test_payment_status_normalization
+    model: silver_payment
+    given:
+      - input: source('bronze', 'payment_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", order_id: "o1", amount: 100000, currency: "vnd", payment_method: "MOMO",    status: "PAID",    platform: "ios", country: "VN", event_date: "2024-01-01", paid_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", order_id: "o2", amount: 200000, currency: "",    payment_method: "UNKNOWN", status: "SUCCESS", platform: "ios", country: "VN", event_date: "2024-01-01", paid_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", currency: "VND", payment_method: "momo",  status: "paid"}
+        - {event_id: "e2", currency: "VND", payment_method: "other", status: "unknown"}
+
+  - name: test_payment_zero_or_negative_amount_filtered
+    model: silver_payment
+    given:
+      - input: source('bronze', 'payment_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", order_id: "o1", amount: 0,      currency: "VND", payment_method: "momo", status: "paid", platform: "ios", country: "VN", event_date: "2024-01-01", paid_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", order_id: "o2", amount: -1000,  currency: "VND", payment_method: "momo", status: "paid", platform: "ios", country: "VN", event_date: "2024-01-01", paid_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", order_id: "o3", amount: 150000, currency: "VND", payment_method: "momo", status: "paid", platform: "ios", country: "VN", event_date: "2024-01-01", paid_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e3", amount: 150000}
+
+  - name: test_search_has_results_derived
+    model: silver_search
+    given:
+      - input: source('bronze', 'search_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", platform: "ios", country: "VN", query: "áo phông", result_count: 0,  clicked_result_id: "",         event_date: "2024-01-01", searched_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", platform: "ios", country: "VN", query: "quần jeans", result_count: 42, clicked_result_id: "prod-456", event_date: "2024-01-01", searched_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", has_results: false, clicked_result_id: null}
+        - {event_id: "e2", has_results: true,  clicked_result_id: "prod-456"}
+
+  - name: test_search_negative_result_count_becomes_zero
+    model: silver_search
+    given:
+      - input: source('bronze', 'search_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", platform: "ios", country: "VN", query: "test", result_count: -5, clicked_result_id: "", event_date: "2024-01-01", searched_at: "2024-01-01T00:00:00Z", ingested_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", result_count: 0, has_results: false}
