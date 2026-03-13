@@ -1,0 +1,130 @@
+version: 2
+
+models:
+  - name: silver_login
+    description: >
+      Normalized login events from Iceberg Bronze.
+      Filters invalid rows, normalizes platform/country/session_id/device_id.
+
+unit_tests:
+
+  # ---------------------------------------------------------------------------
+  # Platform normalization
+  # ---------------------------------------------------------------------------
+  - name: test_platform_valid_values_lowercased
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "IOS",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ANDROID", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: "WEB",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e4", user_id: 4, session_id: "s4", device_id: "d4", platform: "ios",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", platform: "ios"}
+        - {event_id: "e2", platform: "android"}
+        - {event_id: "e3", platform: "web"}
+        - {event_id: "e4", platform: "ios"}
+
+  - name: test_platform_invalid_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "desktop",  country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "",          country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: null,        country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", platform: "unknown"}
+        - {event_id: "e2", platform: "unknown"}
+        - {event_id: "e3", platform: "unknown"}
+
+  # ---------------------------------------------------------------------------
+  # Country normalization
+  # ---------------------------------------------------------------------------
+  - name: test_country_uppercased
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "vn", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "us", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: "ios", country: "SG", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", country: "VN"}
+        - {event_id: "e2", country: "US"}
+        - {event_id: "e3", country: "SG"}
+
+  - name: test_country_empty_or_null_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "",   event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: null, event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", country: "unknown"}
+        - {event_id: "e2", country: "unknown"}
+
+  # ---------------------------------------------------------------------------
+  # session_id / device_id fallback
+  # ---------------------------------------------------------------------------
+  - name: test_session_device_empty_or_null_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "",    device_id: "",    platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: null,  device_id: null,  platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 3, session_id: "abc", device_id: "xyz", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", session_id: "unknown", device_id: "unknown"}
+        - {event_id: "e2", session_id: "unknown", device_id: "unknown"}
+        - {event_id: "e3", session_id: "abc",     device_id: "xyz"}
+
+  # ---------------------------------------------------------------------------
+  # Row filtering — invalid rows phải bị loại bỏ
+  # ---------------------------------------------------------------------------
+  - name: test_null_event_id_filtered_out
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: null, user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "",   user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e3"}
+
+  - name: test_invalid_user_id_filtered_out
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: null, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e2", user_id: 0,    session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+          - {event_id: "e3", user_id: 1,    session_id: "s3", device_id: "d3", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00.000Z", ingested_at: "2024-01-01T00:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e3"}
+
+  # ---------------------------------------------------------------------------
+  # login_at fallback — dùng ingested_at khi login_at null
+  # ---------------------------------------------------------------------------
+  - name: test_login_at_fallback_to_ingested_at
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_events')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: null,                          ingested_at: "2024-01-01T01:00:00.000Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:30:00.000Z",   ingested_at: "2024-01-01T01:00:00.000Z"}
+    expect:
+      rows:
+        - {event_id: "e1", login_at: "2024-01-01T01:00:00.000Z"}
+        - {event_id: "e2", login_at: "2024-01-01T00:30:00.000Z"}

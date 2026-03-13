@@ -412,6 +412,7 @@ services:
     volumes:
       - ../../src/services/analytics-aggregator/cdp/dags:/opt/airflow/dags
       - ../../src/services/analytics-aggregator:/opt/analytics
+      - ./registry:/opt/analytics/cdp/registry:ro
       - cdp-airflow-logs:/opt/airflow/logs
     ports:
       - "8086:8080"
@@ -452,6 +453,7 @@ services:
     volumes:
       - ../../src/services/analytics-aggregator/cdp/dags:/opt/airflow/dags
       - ../../src/services/analytics-aggregator:/opt/analytics
+      - ./registry:/opt/analytics/cdp/registry:ro
       - cdp-airflow-logs:/opt/airflow/logs
     command: scheduler
     restart: unless-stopped

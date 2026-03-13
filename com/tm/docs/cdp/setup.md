@@ -38,6 +38,14 @@ docker compose up -d --build
 | Luồng 1: Realtime | [setup-realtime.md](setup-realtime.md) | ClickHouse + dbt-clickhouse + `cdp_realtime_pipeline` DAG |
 | Luồng 2: DW | [setup-dw.md](setup-dw.md) | MinIO + Flink + StarRocks + dbt-starrocks + `cdp_medallion_pipeline` DAG |
 
+## Metadata Layer (Bước 2)
+
+Thêm event source mới mà không sửa DAG hay Flink SQL.
+
+| Doc | Nội dung |
+|-----|---------|
+| [setup-metadata.md](setup-metadata.md) | Hướng dẫn thêm source mới + macros reference |
+
 ---
 
 ## Stop / Reset

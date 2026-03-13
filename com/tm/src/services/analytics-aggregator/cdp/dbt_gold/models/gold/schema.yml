@@ -1,0 +1,89 @@
+version: 2
+
+models:
+  - name: gold_user_daily
+    description: >
+      Daily user engagement metrics aggregated from silver_login.
+      Grain: 1 row per event_date.
+
+unit_tests:
+
+  # ---------------------------------------------------------------------------
+  # DAU và total_logins
+  # ---------------------------------------------------------------------------
+  - name: test_dau_counts_distinct_users
+    model: gold_user_daily
+    given:
+      - input: source('silver', 'silver_login')
+        rows:
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 1, session_id: "s2", device_id: "d1", platform: "ios",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T01:00:00Z"}
+          - {user_id: 2, session_id: "s3", device_id: "d2", platform: "android", country: "US", event_date: "2024-01-01", login_at: "2024-01-01T02:00:00Z"}
+    expect:
+      rows:
+        - {event_date: "2024-01-01", dau: 2, total_logins: 3}
+
+  # ---------------------------------------------------------------------------
+  # Platform breakdown
+  # ---------------------------------------------------------------------------
+  - name: test_platform_breakdown
+    model: gold_user_daily
+    given:
+      - input: source('silver', 'silver_login')
+        rows:
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 2, session_id: "s2", device_id: "d2", platform: "ios",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 3, session_id: "s3", device_id: "d3", platform: "android", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 4, session_id: "s4", device_id: "d4", platform: "web",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 5, session_id: "s5", device_id: "d5", platform: "unknown", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_date: "2024-01-01", ios_logins: 2, android_logins: 1, web_logins: 1, unknown_logins: 1}
+
+  # ---------------------------------------------------------------------------
+  # Country breakdown
+  # ---------------------------------------------------------------------------
+  - name: test_country_breakdown
+    model: gold_user_daily
+    given:
+      - input: source('silver', 'silver_login')
+        rows:
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 3, session_id: "s3", device_id: "d3", platform: "ios", country: "US", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 4, session_id: "s4", device_id: "d4", platform: "ios", country: "SG", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 5, session_id: "s5", device_id: "d5", platform: "ios", country: "TH", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_date: "2024-01-01", vn_logins: 2, us_logins: 1, sg_logins: 1, other_logins: 1}
+
+  # ---------------------------------------------------------------------------
+  # unique_sessions / unique_devices
+  # ---------------------------------------------------------------------------
+  - name: test_unique_sessions_and_devices
+    model: gold_user_daily
+    given:
+      - input: source('silver', 'silver_login')
+        rows:
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T01:00:00Z"}
+          - {user_id: 2, session_id: "s2", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T02:00:00Z"}
+    expect:
+      rows:
+        - {event_date: "2024-01-01", unique_sessions: 2, unique_devices: 1}
+
+  # ---------------------------------------------------------------------------
+  # Multi-date — mỗi ngày aggregate riêng biệt
+  # ---------------------------------------------------------------------------
+  - name: test_aggregation_per_date
+    model: gold_user_daily
+    given:
+      - input: source('silver', 'silver_login')
+        rows:
+          - {user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {user_id: 1, session_id: "s3", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-02", login_at: "2024-01-02T00:00:00Z"}
+    expect:
+      rows:
+        - {event_date: "2024-01-01", dau: 2, total_logins: 2}
+        - {event_date: "2024-01-02", dau: 1, total_logins: 1}

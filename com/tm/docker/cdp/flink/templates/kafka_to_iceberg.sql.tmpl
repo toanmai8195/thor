@@ -1,0 +1,67 @@
+-- =============================================================================
+-- FLINK CDP INGEST JOB — __SOURCE_ID__
+-- Generated from event_registry.yml by submit_from_registry.sh
+-- DO NOT edit directly — edit registry and regenerate.
+-- =============================================================================
+
+SET 'execution.checkpointing.interval'                = '60s';
+SET 'execution.checkpointing.mode'                    = 'EXACTLY_ONCE';
+SET 'execution.checkpointing.externalized-checkpoint-retention' = 'RETAIN_ON_CANCELLATION';
+
+-- =============================================================================
+-- ICEBERG CATALOG (MinIO / S3A)
+-- =============================================================================
+CREATE CATALOG IF NOT EXISTS iceberg_catalog WITH (
+    'type'                                              = 'iceberg',
+    'catalog-type'                                      = 'hadoop',
+    'warehouse'                                         = 's3a://lakehouse/warehouse',
+    'hadoop.fs.s3a.access.key'                         = 'minioadmin',
+    'hadoop.fs.s3a.secret.key'                         = 'minioadmin',
+    'hadoop.fs.s3a.endpoint'                           = 'http://minio:9000',
+    'hadoop.fs.s3a.path.style.access'                  = 'true',
+    'hadoop.fs.s3a.impl'                               = 'org.apache.hadoop.fs.s3a.S3AFileSystem',
+    'hadoop.fs.s3a.aws.credentials.provider'           = 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider'
+);
+
+-- =============================================================================
+-- SOURCE: Kafka "__KAFKA_TOPIC__"
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS default_catalog.default_database.kafka___SOURCE_ID___src
+(
+__KAFKA_FIELD_DEFINITIONS__
+) WITH (
+    'connector'                    = 'kafka',
+    'topic'                        = '__KAFKA_TOPIC__',
+    'properties.bootstrap.servers' = 'kafka:9092',
+    'properties.group.id'          = '__CONSUMER_GROUP__',
+    'scan.startup.mode'            = 'latest-offset',
+    'format'                       = 'json',
+    'json.ignore-parse-errors'     = 'true'
+);
+
+-- =============================================================================
+-- SINK: Iceberg iceberg_catalog.__ICEBERG_DB__.__ICEBERG_TABLE__
+-- =============================================================================
+CREATE DATABASE IF NOT EXISTS iceberg_catalog.__ICEBERG_DB__;
+
+CREATE TABLE IF NOT EXISTS iceberg_catalog.__ICEBERG_DB__.__ICEBERG_TABLE__
+(
+__ICEBERG_FIELD_DEFINITIONS__,
+    ingested_at TIMESTAMP(3) COMMENT 'Flink processing time'
+)
+PARTITIONED BY (__PARTITION_FIELD__)
+WITH (
+    'format-version'             = '2',
+    'write.format.default'       = 'parquet',
+    'write.target-file-size-bytes' = '134217728'
+);
+
+-- =============================================================================
+-- JOB: Kafka → Iceberg (pass-through, all fields as STRING)
+-- Normalization happens downstream in dbt Silver
+-- =============================================================================
+INSERT INTO iceberg_catalog.__ICEBERG_DB__.__ICEBERG_TABLE__
+SELECT
+__FIELD_NAMES__,
+    PROCTIME() AS ingested_at
+FROM default_catalog.default_database.kafka___SOURCE_ID___src;

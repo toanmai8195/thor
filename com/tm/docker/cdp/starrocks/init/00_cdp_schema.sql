@@ -72,7 +72,38 @@ PROPERTIES (
 );
 
 -- =============================================================================
--- Gold table (cdp.gold_user_daily) sẽ do dbt tạo/replace
--- Chỉ cần tạo database ở đây
+-- METADATA LAYER: cdp.event_registry (Step 2)
+-- Single source of truth cho tất cả CDP pipeline sources.
+-- Sync từ docker/cdp/registry/event_registry.yml khi deploy source mới.
 -- =============================================================================
--- (gold_user_daily đã nằm trong cùng cdp database)
+CREATE TABLE IF NOT EXISTS event_registry
+(
+    source_id            VARCHAR(50)  NOT NULL COMMENT 'login | view | click | payment | search',
+    description          VARCHAR(200)          COMMENT 'Mo ta event source',
+    kafka_topic          VARCHAR(100) NOT NULL COMMENT 'Kafka ingest topic (sau cdp-ingestor)',
+    iceberg_database     VARCHAR(50)  NOT NULL COMMENT 'Iceberg DB: bronze',
+    iceberg_table        VARCHAR(100) NOT NULL COMMENT 'Iceberg table: login_events',
+    sr_silver_model      VARCHAR(100) NOT NULL COMMENT 'dbt silver model name: silver_login',
+    sr_gold_model        VARCHAR(100)          COMMENT 'dbt gold model name (nullable)',
+    flink_consumer_group VARCHAR(100)          COMMENT 'Flink Kafka consumer group',
+    enabled              BOOLEAN DEFAULT TRUE  COMMENT 'FALSE = skip trong pipeline',
+    registered_at        DATETIME              COMMENT 'Khi nao dang ky source nay'
+)
+PRIMARY KEY (source_id)
+DISTRIBUTED BY HASH(source_id) BUCKETS 1
+PROPERTIES ("replication_num" = "1");
+
+-- Seed: login source (Step 1)
+INSERT INTO event_registry VALUES (
+    'login',
+    'User login events — first CDP data source',
+    'login-events-ingest',
+    'bronze', 'login_events',
+    'silver_login', 'gold_user_daily',
+    'flink-iceberg-cdp-login',
+    TRUE, NOW()
+);
+
+-- =============================================================================
+-- Gold table (cdp.gold_user_daily) do dbt tao/replace — khong can CREATE o day
+-- =============================================================================

@@ -13,7 +13,7 @@ Dual-pipeline: **Realtime** (ClickHouse) + **DW** (Iceberg/StarRocks) song song 
 | Bước | Tên | Status | Ghi chú |
 |------|-----|--------|---------|
 | 1 | [Login Event (first source)](#bước-1-login-event) | ✅ Done | Full flow, 1 event type |
-| 2 | [Metadata Layer](#bước-2-metadata-layer) | ⬜ Planned | Registry tự động hoá multi-source |
+| 2 | [Metadata Layer](#bước-2-metadata-layer) | ✅ Done | Registry tự động hoá multi-source |
 | 3 | [Multi Data Sources](#bước-3-multi-data-sources) | ⬜ Planned | View, click, payment, search |
 | 4 | [Identity Resolution](#bước-4-identity-resolution) | ⬜ Planned | Silver layer — anonymous_id → user_id |
 | 5 | [Unified User Profile (360°)](#bước-5-unified-user-profile) | ⬜ Planned | Core CDP output — 1 row/user |
@@ -85,29 +85,64 @@ Producer: ~500 events/s, 100k unique users, platform distribution ios(30%)/andro
 
 ## Bước 2: Metadata Layer
 
-**Mục tiêu:** Không cần sửa Flink/dbt/DAG khi thêm event source mới.
+**Mục tiêu:** Không cần sửa Flink SQL / Airflow DAG khi thêm event source mới.
 
-**Vấn đề của Bước 1:** Mỗi event source = copy toàn bộ Flink SQL + dbt models + DAG.
+**Vấn đề của Bước 1:** Mỗi event source = copy toàn bộ Flink SQL + dbt boilerplate + DAG task.
 
-**Giải pháp — Event Registry:**
-- `cdp.event_registry` (StarRocks table): khai báo metadata của từng event source
-- Flink job template: parameterized SQL, đọc topic/table name từ registry
-- dbt macro: generate silver model từ schema definition
-- Airflow: 1 DAG duy nhất loop qua tất cả enabled sources trong registry
+### Giải pháp — 4 thành phần
+
+| Thành phần | File | Chức năng |
+|-----------|------|-----------|
+| Event Registry | `docker/cdp/registry/event_registry.yml` | Source of truth — 1 nơi khai báo tất cả sources |
+| Flink template | `docker/cdp/flink/templates/kafka_to_iceberg.sql.tmpl` | Generic Flink SQL, tham số hoá từ registry |
+| dbt macros | `dbt_silver/macros/cdp_normalize.sql` | Hàm normalize tái sử dụng — bỏ copy-paste |
+| Registry-driven DAG | `dags/cdp_pipeline_dag.py` | Tự tạo TaskGroup per source từ registry |
+
+### Workflow thêm source mới (sau Bước 2)
+
+```bash
+# 1. Thêm entry vào event_registry.yml (khai báo topic, tables, model names)
+vim docker/cdp/registry/event_registry.yml
+
+# 2. Submit Flink job — generate SQL từ template + submit
+./docker/cdp/flink/submit_from_registry.sh view
+
+# 3. Tạo dbt silver model cho logic normalize riêng của source
+# (dùng macros có sẵn — không cần viết lại normalize_platform/country)
+vim src/services/analytics-aggregator/cdp/dbt_silver/models/silver/silver_view.sql
+
+# 4. Restart Airflow → DAG tự pick up source mới, không sửa DAG
+docker compose restart airflow-webserver airflow-scheduler
+```
+
+### dbt macros (StarRocks + ClickHouse)
+
+Cùng interface, khác DB syntax:
 
 ```sql
--- cdp.event_registry
-CREATE TABLE event_registry (
-    source_id     VARCHAR(50)  NOT NULL,   -- "login", "view", "click", "payment"
-    kafka_topic   VARCHAR(100) NOT NULL,   -- "login-events-ingest"
-    iceberg_table VARCHAR(100) NOT NULL,   -- "bronze.login_events"
-    sr_silver     VARCHAR(100) NOT NULL,   -- "cdp.silver_login"
-    sr_gold       VARCHAR(100),            -- "cdp.gold_user_daily"
-    enabled       BOOLEAN DEFAULT TRUE,
-    created_at    DATETIME
-)
-PRIMARY KEY (source_id)
+-- Dùng trong silver model thay vì copy-paste CASE expression
+{{ normalize_platform('platform') }}   -- ios/android/web/unknown
+{{ normalize_country('country') }}     -- VN/US/SG.../unknown
+{{ normalize_id('session_id') }}       -- empty/null → 'unknown'
+{{ silver_incremental_filter() }}      -- WHERE event_date >= MAX-1d
 ```
+
+### cdp.event_registry (StarRocks table)
+
+```sql
+source_id            VARCHAR(50)  PK   -- login | view | click | payment | search
+kafka_topic          VARCHAR(100)      -- login-events-ingest
+iceberg_database     VARCHAR(50)       -- bronze
+iceberg_table        VARCHAR(100)      -- login_events
+sr_silver_model      VARCHAR(100)      -- silver_login (tên dbt model)
+sr_gold_model        VARCHAR(100)      -- gold_user_daily (nullable)
+flink_consumer_group VARCHAR(100)      -- flink-iceberg-cdp-login
+enabled              BOOLEAN           -- FALSE = skip trong pipeline
+```
+
+### Tài liệu chi tiết
+
+→ [setup-metadata.md](setup-metadata.md)
 
 ---
 

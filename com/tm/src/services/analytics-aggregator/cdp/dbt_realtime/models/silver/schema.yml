@@ -1,0 +1,104 @@
+version: 2
+
+models:
+  - name: silver_login
+    description: >
+      Normalized login events from ClickHouse login_bronze (realtime path).
+      Same normalization logic as DW silver_login but uses ClickHouse syntax (if/lower/upper).
+
+unit_tests:
+
+  # ---------------------------------------------------------------------------
+  # Platform normalization — ClickHouse CASE/lower
+  # ---------------------------------------------------------------------------
+  - name: test_platform_valid_values_lowercased
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "IOS",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ANDROID", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e3", user_id: 3, session_id: "s3", device_id: "d3", platform: "WEB",     country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", platform: "ios"}
+        - {event_id: "e2", platform: "android"}
+        - {event_id: "e3", platform: "web"}
+
+  - name: test_platform_invalid_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "desktop", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "",         country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", platform: "unknown"}
+        - {event_id: "e2", platform: "unknown"}
+
+  # ---------------------------------------------------------------------------
+  # Country normalization — ClickHouse CASE/upper (không check null vì CH String không null)
+  # ---------------------------------------------------------------------------
+  - name: test_country_uppercased
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "vn", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "us", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", country: "VN"}
+        - {event_id: "e2", country: "US"}
+
+  - name: test_country_empty_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", country: "unknown"}
+
+  # ---------------------------------------------------------------------------
+  # session_id / device_id — ClickHouse if(trim()='', 'unknown', trim())
+  # Note: ClickHouse String không có null, chỉ cần check empty string
+  # ---------------------------------------------------------------------------
+  - name: test_session_device_empty_mapped_to_unknown
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 1, session_id: "",    device_id: "",    platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "abc", device_id: "xyz", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e1", session_id: "unknown", device_id: "unknown"}
+        - {event_id: "e2", session_id: "abc",     device_id: "xyz"}
+
+  # ---------------------------------------------------------------------------
+  # Row filtering
+  # ---------------------------------------------------------------------------
+  - name: test_empty_event_id_filtered_out
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "",   user_id: 1, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 2, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e2"}
+
+  - name: test_invalid_user_id_filtered_out
+    model: silver_login
+    given:
+      - input: source('bronze', 'login_bronze')
+        rows:
+          - {event_id: "e1", user_id: 0, session_id: "s1", device_id: "d1", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+          - {event_id: "e2", user_id: 1, session_id: "s2", device_id: "d2", platform: "ios", country: "VN", event_date: "2024-01-01", login_at: "2024-01-01T00:00:00Z"}
+    expect:
+      rows:
+        - {event_id: "e2"}
