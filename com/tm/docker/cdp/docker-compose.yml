@@ -2,27 +2,25 @@
 # DOCKER COMPOSE — CDP PIPELINE (Dual-Pipeline: Realtime + DW)
 # =============================================================================
 #
-#   login-event-producer (~500 events/s)
-#           │ Kafka: login-events
-#           ▼
-#   cdp-ingestor (validate JSON + event_id)
-#           │ Kafka: login-events-ingest
-#     ┌─────┴──────────────────────┐
-#     │                            │
-#     ▼                            ▼
-# LUỒNG 1: REALTIME          LUỒNG 2: DW
-#   (ClickHouse)          (Iceberg + StarRocks)
-#     │                            │
-# CH Kafka Engine         Flink (checkpoint 60s)
-#     │                            │
-# cdp.login_bronze        Iceberg: bronze/login_events
-#     │ dbt (1min)              (MinIO, Parquet)
-# cdp.silver_login                 │
-#     │                    SR Iceberg ext catalog
-#  Superset                        │ dbt (3min)
-# (realtime)           cdp.silver_login (SR native)
-#                                  │ dbt (3min)
-#                         cdp.gold_user_daily
+#   login-event-producer (~500 events/s)  event-producer (10 events/s × 4)
+#           │ Kafka: login-events                │ Kafka: view/click/payment/search-events
+#           ▼                                    ▼
+#   cdp-ingestor-login              cdp-ingestor-view/click/payment/search
+#           │ Kafka: login-events-ingest         │ Kafka: *-events-ingest
+#     ┌─────┴────────────────────────────────────┤
+#     │                                          │
+#     ▼                                          ▼
+# LUỒNG 1: REALTIME                        LUỒNG 2: DW
+#   (ClickHouse — login only)          (Iceberg + StarRocks — all 5 sources)
+#     │                                          │
+# CH Kafka Engine                     Flink (checkpoint 60s)
+#     │                                          │ Parquet
+# cdp.login_bronze                    Iceberg: bronze/{login,view,click,payment,search}_events
+#     │ dbt (1min)                              (MinIO)
+# cdp.silver_login                              │ SR external catalog
+#     │                               cdp.silver_{login,view,click,payment,search} (UPSERT, 3min)
+#  Superset                                      │ dbt (3min)
+# (realtime)                          cdp.gold_{user,page,search}_daily
 #
 # =============================================================================
 # PORTS:
@@ -88,12 +86,16 @@ services:
       test:
         - "CMD-SHELL"
         - |
-          /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-            --create --if-not-exists --topic login-events \
-            --partitions 6 --replication-factor 1 > /dev/null 2>&1 &&
-          /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-            --create --if-not-exists --topic login-events-ingest \
-            --partitions 6 --replication-factor 1 > /dev/null 2>&1
+          for topic in \
+            login-events login-events-ingest \
+            view-events view-events-ingest \
+            click-events click-events-ingest \
+            payment-events payment-events-ingest \
+            search-events search-events-ingest; do
+            /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+              --create --if-not-exists --topic "$topic" \
+              --partitions 6 --replication-factor 1 > /dev/null 2>&1
+          done
       interval: 10s
       timeout: 15s
       retries: 10
@@ -152,7 +154,7 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # EVENT PRODUCER & CDP INGESTOR
+  # EVENT PRODUCERS
   # Build: bazel run //com/tm/src/services/<name>:<name>_docker
   # ===========================================================================
   login-event-producer:
@@ -170,10 +172,33 @@ services:
       - "-rate=500"
     restart: unless-stopped
 
-  cdp-ingestor:
+  # event-producer: view + click + payment + search — 4 goroutine song song, 10 RPS mỗi topic
+  event-producer:
+    image: com.tm.go.event-producer:v1.0.0
+    container_name: cdp-event-producer
+    hostname: event-producer
+    networks:
+      - cdp-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-rate=10"
+      - "-view-topic=view-events"
+      - "-click-topic=click-events"
+      - "-payment-topic=payment-events"
+      - "-search-topic=search-events"
+    restart: unless-stopped
+
+  # ===========================================================================
+  # CDP INGESTORS — one instance per event source
+  # Generic JSON validator: <source>-events → <source>-events-ingest
+  # ===========================================================================
+  cdp-ingestor-login:
     image: com.tm.go.cdp-ingestor:v1.0.0
-    container_name: cdp-ingestor
-    hostname: cdp-ingestor
+    container_name: cdp-ingestor-login
+    hostname: cdp-ingestor-login
     networks:
       - cdp-network
     depends_on:
@@ -184,6 +209,70 @@ services:
       - "-input-topic=login-events"
       - "-output-topic=login-events-ingest"
       - "-group=cdp-login-ingestor"
+    restart: unless-stopped
+
+  cdp-ingestor-view:
+    image: com.tm.go.cdp-ingestor:v1.0.0
+    container_name: cdp-ingestor-view
+    hostname: cdp-ingestor-view
+    networks:
+      - cdp-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-input-topic=view-events"
+      - "-output-topic=view-events-ingest"
+      - "-group=cdp-view-ingestor"
+    restart: unless-stopped
+
+  cdp-ingestor-click:
+    image: com.tm.go.cdp-ingestor:v1.0.0
+    container_name: cdp-ingestor-click
+    hostname: cdp-ingestor-click
+    networks:
+      - cdp-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-input-topic=click-events"
+      - "-output-topic=click-events-ingest"
+      - "-group=cdp-click-ingestor"
+    restart: unless-stopped
+
+  cdp-ingestor-payment:
+    image: com.tm.go.cdp-ingestor:v1.0.0
+    container_name: cdp-ingestor-payment
+    hostname: cdp-ingestor-payment
+    networks:
+      - cdp-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-input-topic=payment-events"
+      - "-output-topic=payment-events-ingest"
+      - "-group=cdp-payment-ingestor"
+    restart: unless-stopped
+
+  cdp-ingestor-search:
+    image: com.tm.go.cdp-ingestor:v1.0.0
+    container_name: cdp-ingestor-search
+    hostname: cdp-ingestor-search
+    networks:
+      - cdp-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "-kafka=kafka:9092"
+      - "-input-topic=search-events"
+      - "-output-topic=search-events-ingest"
+      - "-group=cdp-search-ingestor"
     restart: unless-stopped
 
   # ===========================================================================

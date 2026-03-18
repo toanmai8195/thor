@@ -1,15 +1,20 @@
 # Luồng 1: Realtime Pipeline (ClickHouse)
 
-Pipeline xử lý login events **theo thời gian thực** với latency < 2 phút.
+Pipeline xử lý **login events** theo thời gian thực với latency < 2 phút.
+
+> **Scope:** Luồng 1 hiện chỉ xử lý `login` source. Các sources mới (view, click, payment, search) chạy qua **Luồng 2 (DW)** — xem [pipeline-dw.md](pipeline-dw.md).
 
 ---
 
 ## Kiến trúc
 
 ```
-Kafka: login-events-ingest
-        │ consumer group: ch-cdp-login
+login-event-producer (~500 events/s)
+        │ Kafka: login-events
         ▼
+cdp-ingestor-login (validate JSON + event_id)
+        │ Kafka: login-events-ingest
+        ▼ consumer group: ch-cdp-login
 cdp.login_kafka (ClickHouse Kafka Engine)
         │ Materialized View (filter _error = '')
         ▼
