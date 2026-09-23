@@ -16,6 +16,12 @@
 # Sử dụng bzlmod (Bazel 6+)
 common --enable_bzlmod
 
+# Tắt telemetry của aspect_rules_js (aspect_tools_telemetry)
+common --repo_env=DO_NOT_TRACK=1
+
+# TypeScript (aspect_rules_ts): tsc vừa typecheck vừa sinh .js
+common --@aspect_rules_ts//ts:default_to_tsc_transpiler
+
 # =============================================================================
 # BUILD SETTINGS
 # =============================================================================
@@ -64,11 +70,11 @@ test --test_output=errors
 # PLATFORM SPECIFIC
 # =============================================================================
 
-# macOS ARM64 (Apple Silicon)
-build:macos-arm64 --platforms=@rules_go//go/toolchain:darwin_arm64
-
-# Linux AMD64
-build:linux-amd64 --platforms=@rules_go//go/toolchain:linux_amd64
+# Build OCI image đúng kiến trúc máy chạy container:
+#   bazel run --config=linux-arm64 //...:<name>_docker   (Mac Apple Silicon)
+#   bazel run --config=linux-amd64 //...:<name>_docker   (server x86)
+build:linux-amd64 --platforms=//:linux_amd64
+build:linux-arm64 --platforms=//:linux_arm64
 
 # =============================================================================
 # PROFILES

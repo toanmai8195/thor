@@ -1,0 +1,2 @@
+# node_modules do pnpm/npm cài cho dev local — Bazel dùng @npm_friend_service thay thế.
+com/tm/friend-service/node_modules

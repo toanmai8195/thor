@@ -347,3 +347,7 @@ kubeconfig
 
 # Helm
 charts/*.tgz
+
+# friend-service (Node.js / TypeScript): deps cài bằng pnpm, output của `pnpm build`
+com/tm/friend-service/node_modules/
+com/tm/friend-service/dist/

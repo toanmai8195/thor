@@ -1,0 +1,10 @@
+{
+  // pnpm build (không qua Bazel): src/*.ts → dist/*.js
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false
+  },
+  "include": ["src"]
+}
