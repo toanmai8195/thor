@@ -434,6 +434,7 @@ Hiện có:
     ├── event-gateway/            # Go: Kafka friend_service_events → friend_events (mục 11)
     │   ├── BUILD.bazel  main.go  README.md
     │   └── internal/{config,consumer,event,producer,relay}/
+    ├── friend-simulator/         # Go: sinh tải giả 10 request/s vào friend-service (README riêng)
     ├── friend-service/           # Node.js + MongoDB (mục 10), cấu trúc layer ở 10.2
     │   ├── BUILD.bazel           # npm deps, package.json, tsconfig
     │   ├── README.md             # setup và chạy thử
@@ -444,7 +445,7 @@ Hiện có:
     │   │   └── {router,handler,controller,dao,utils,configs}/   # mỗi layer 1 BUILD.bazel
     │   └── test/                 # BUILD.bazel riêng cho js_test
     └── infra/
-        ├── docker-compose.yml    # MongoDB, Kafka, StarRocks, event-gateway, friend-service cho local
+        ├── docker-compose.yml    # MongoDB, Kafka, StarRocks, event-gateway, friend-service (+ friend-simulator, profile simulator)
         └── starrocks/            # init StarRocks local: schema (01_schema.sql), Routine Load, init.sh
 ```
 

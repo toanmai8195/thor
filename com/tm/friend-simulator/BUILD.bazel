@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/rules:com_tm_container.bzl", "com_tm_go_image")
+
+# friend-simulator: gọi friend-service với hành động giả, mặc định 10 request/s.
+#   bazel run //com/tm/friend-simulator:friend_simulator
+#   bazel test //com/tm/friend-simulator/...
+#   bazel run --config=linux-arm64 //com/tm/friend-simulator:friend_simulator_docker
+com_tm_go_image(
+    name = "friend_simulator",
+    package_name = package_name(),
+    embed = [":friend-simulator_lib"],
+    exposed_ports = ["8090/tcp"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "friend-simulator_lib",
+    srcs = ["main.go"],
+    importpath = "thor/com/tm/friend-simulator",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//com/tm/friend-simulator/internal/client",
+        "//com/tm/friend-simulator/internal/config",
+        "//com/tm/friend-simulator/internal/sim",
+    ],
+)

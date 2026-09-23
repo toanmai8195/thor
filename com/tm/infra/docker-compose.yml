@@ -113,6 +113,21 @@ services:
       mongo: { condition: service_healthy }
       kafka-init: { condition: service_completed_successfully }
 
+  # Sinh hành động giả gọi friend-service (mặc định 10 request/s). Không tự chạy:
+  #   bazel run --config=linux-arm64 //com/tm/friend-simulator:friend_simulator_docker
+  #   docker compose --profile simulator up -d friend-simulator
+  friend-simulator:
+    image: com.tm.go.friend_simulator:v1.0.0
+    profiles: ["simulator"]
+    ports: ["8090:8090"] # /healthz, /stats
+    environment:
+      FRIEND_SERVICE_URL: http://friend-service:3000
+      RPS: "10"
+      USERS: "1000"
+      USER_ID_START: "100000"
+    depends_on:
+      friend-service: { condition: service_started }
+
 volumes:
   mongo-data:
   starrocks-data:

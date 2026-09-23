@@ -141,6 +141,15 @@ docker compose down        # dừng, giữ dữ liệu MongoDB / StarRocks
 docker compose down -v     # dừng và xoá luôn dữ liệu
 ```
 
+## Sinh tải giả
+
+Muốn có dữ liệu liên tục mà không gọi tay: [`com/tm/friend-simulator`](../friend-simulator/README.md) gọi API với 10 request/s.
+
+```bash
+bazel run --config=linux-arm64 //com/tm/friend-simulator:friend_simulator_docker
+cd com/tm/infra && docker compose --profile simulator up -d friend-simulator
+```
+
 ## Sửa code rồi chạy lại
 
 ```bash
