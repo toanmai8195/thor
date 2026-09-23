@@ -52,17 +52,3 @@ oci.pull(
     ],
 )
 use_repo(oci, "distroless_base", "distroless_base_linux_amd64", "distroless_base_linux_arm64_v8")
-
-# =============================================================================
-# PYTHON RULES
-# =============================================================================
-# Dùng cho Airflow DAGs và dbt scripts
-# =============================================================================
-bazel_dep(name = "rules_python", version = "1.5.4")
-
-# Python toolchain - sử dụng system Python
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    is_default = True,
-    python_version = "3.11",
-)
