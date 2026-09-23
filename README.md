@@ -5,7 +5,9 @@ Theo dõi quan hệ bạn bè giữa các user từ luồng event, trả lời c
 - User có bao nhiêu bạn? Là những ai?
 - User đang block ai / đang bị ai block? Số lượng?
 - Lời mời đã gửi / đã nhận đang chờ?
-- Tại một thời điểm trong quá khứ, các câu trả lời trên là gì?
+- Số lượng các loại trên thay đổi thế nào theo ngày (180 ngày gần nhất)?
+
+Chỉ cần **trạng thái mới nhất**; không trả lời "tại thời điểm X trong quá khứ, partners của user là ai".
 
 Nguyên tắc cốt lõi: **mỗi cặp có hướng (`user_id → friend_id`) chỉ có đúng 1 status tại 1 thời điểm**, là event mới nhất theo `event_time`.
 
@@ -25,21 +27,21 @@ client ──► friend-service (TypeScript) ──► MongoDB (friendships)
                     ▼
            Kafka (friend_events) ──┬─ Routine Load ──► ODS  ods_friend_event      (lịch sử, append)
                                    └─ Routine Load ──► DWD  dwd_friend_status     (trạng thái hiện tại, upsert)
-                                                             └─ Async MV ──► DWS  dws_friend_summary (số liệu theo user)
-                                                                  └─ Task hằng ngày ──► dws_friend_daily (tuỳ chọn)
+                                                             └─ Task 10 phút ──► DWS  dws_friend_summary (số lượng theo user)
+                                                                  └─ Task hằng ngày ──► DWS  dws_friend_daily (theo ngày)
 ```
 
-| Layer | Bảng | 1 dòng là | Kiểu bảng | Cập nhật | Dùng cho |
-|---|---|---|---|---|---|
-| Service | MongoDB `friendships` | 1 cặp có hướng | collection | transaction, ghi 2 chiều | API online, nguồn sự thật (mục 10) |
-| ODS | `ods_friend_event` | 1 event | Duplicate Key | append, **giữ 30 ngày** | audit, truy vấn as-of trong 30 ngày |
-| DWD | `dwd_friend_status` | 1 cặp có hướng | Primary Key | upsert theo `event_time` | danh sách hiện tại |
-| DWS | `dws_friend_summary` | 1 user | Async MV | refresh 10 phút | số lượng hiện tại |
-| DWS | `dws_friend_daily` | 1 user / 1 ngày | Duplicate Key | task hằng ngày | xu hướng (tuỳ chọn) |
+| Layer | Bảng | 1 dòng là | Kiểu bảng | Cập nhật | Giữ | Dùng cho |
+|---|---|---|---|---|---|---|
+| Service | MongoDB `friendships` | 1 cặp có hướng | collection | transaction, ghi 2 chiều | vĩnh viễn | API online, nguồn sự thật (mục 10) |
+| ODS | `ods_friend_event` | 1 event | Duplicate Key | Routine Load, append | **180 ngày** | audit, tìm user thay đổi cho summary |
+| DWD | `dwd_friend_status` | 1 cặp có hướng | Primary Key | Routine Load, upsert theo `event_time` | **vĩnh viễn** | partners mỗi status của 1 user: số lượng, là ai |
+| DWS | `dws_friend_summary` | 1 user | Primary Key | task 10 phút, chỉ user có event mới | **vĩnh viễn** (số mới nhất) | số lượng cho nhiều user cùng lúc |
+| DWS | `dws_friend_daily` | 1 user / 1 ngày | Duplicate Key | task 00:05 mỗi ngày, ghi đè partition | **180 ngày** | xu hướng theo ngày |
 
 ODS và DWD **cùng đọc song song từ Kafka**, DWD không đọc từ ODS.
 
-`friend-service` là nguồn sự thật cho API online; StarRocks là bản sao phục vụ phân tích (trễ vài giây ở DWD, ≤ 10 phút ở DWS). Chỉ `event-gateway` ghi vào topic `friend_events` mà StarRocks đọc (mục 11).
+`friend-service` là nguồn sự thật cho API online; StarRocks là bản sao phục vụ phân tích (trễ vài giây ở DWD, ≤ ~10 phút ở `dws_friend_summary`, 1 ngày ở `dws_friend_daily`). Chỉ `event-gateway` ghi vào topic `friend_events` mà StarRocks đọc (mục 11).
 
 ---
 
@@ -102,8 +104,9 @@ Mọi status nhìn từ góc của `user_id`:
 
 ## 3. DDL
 
-> Số bucket (`32`) là giá trị khởi đầu, chỉnh sao cho mỗi tablet khoảng 1–10 GB.
-> Tất cả bảng cùng `HASH(user_id)`, cùng số bucket, cùng `colocate_with` để join không shuffle.
+> Bản đầy đủ (DDL, Routine Load, task, query): `friend_network.sql`. Bản local: `com/tm/infra/starrocks/`.
+> Số bucket tính cho quy mô 50M user × 500–1000 quan hệ, 100 hành động/s (mục 12); chỉnh theo số liệu thật trước khi tạo bảng, đổi sau phải ghi lại dữ liệu.
+> Thời gian dùng `DATETIME` (StarRocks lưu tới micro giây nên giữ đủ mili giây của `event_time`); StarRocks không nhận cú pháp `DATETIME(3)`.
 
 ```sql
 CREATE DATABASE IF NOT EXISTS social;
@@ -116,7 +119,7 @@ USE social;
 CREATE TABLE IF NOT EXISTS ods_friend_event (
     user_id      BIGINT       NOT NULL,
     friend_id    BIGINT       NOT NULL,
-    event_time   DATETIME(3)  NOT NULL COMMENT 'thời điểm hành động, do service sinh',
+    event_time   DATETIME     NOT NULL COMMENT 'thời điểm hành động, do service sinh (ms)',
     event_type   VARCHAR(16)  NOT NULL COMMENT 'REQUESTED/REVIEWED/FRIEND/CANCEL/UNFRIEND/BLOCKING/BLOCKED',
     event_id     VARCHAR(64)  NOT NULL COMMENT 'tăng dần, tie-break khi trùng event_time',
     source       VARCHAR(32)  NULL,
@@ -124,17 +127,14 @@ CREATE TABLE IF NOT EXISTS ods_friend_event (
 )
 DUPLICATE KEY(user_id, friend_id, event_time)
 PARTITION BY date_trunc('day', event_time)
-DISTRIBUTED BY HASH(user_id) BUCKETS 32
+DISTRIBUTED BY HASH(user_id) BUCKETS 4
 PROPERTIES (
-    "replication_num" = "3",
-    "colocate_with"   = "grp_user",
-    "partition_live_number" = "30"   -- TTL: chỉ giữ 30 partition ngày gần nhất
+    "replication_num"       = "3",
+    "partition_live_number" = "180"   -- TTL: chỉ giữ 180 partition ngày gần nhất
 );
 ```
 
-> **TTL 30 ngày**: mỗi partition là 1 ngày, StarRocks tự drop partition cũ, chỉ giữ 30 partition mới nhất.
-> `partition_live_number` đếm số partition chứ không đếm ngày lịch: ngày không có event thì không có partition, nên dữ liệu thực tế có thể cũ hơn 30 ngày một chút.
-> DWD và DWS **không bị ảnh hưởng** bởi TTL này: trạng thái hiện tại của mọi cặp vẫn được giữ vĩnh viễn trong `dwd_friend_status`.
+> **TTL 180 ngày**: mỗi partition là 1 ngày, StarRocks tự drop partition cũ, chỉ giữ 180 partition mới nhất (`partition_live_number` đếm partition, ngày không có event thì không có partition).
 
 ### 3.2 DWD: `dwd_friend_status`
 
@@ -143,39 +143,40 @@ CREATE TABLE IF NOT EXISTS dwd_friend_status (
     user_id          BIGINT       NOT NULL,
     friend_id        BIGINT       NOT NULL,
     status           VARCHAR(16)  NOT NULL COMMENT 'event_type mới nhất của cặp',
-    last_event_time  DATETIME(3)  NOT NULL COMMENT 'cột so sánh của merge_condition',
+    last_event_time  DATETIME     NOT NULL COMMENT 'cột so sánh của merge_condition',
     last_event_id    VARCHAR(64)  NOT NULL,
     updated_at       DATETIME     NULL
 )
 PRIMARY KEY(user_id, friend_id)
-DISTRIBUTED BY HASH(user_id) BUCKETS 32
+DISTRIBUTED BY HASH(user_id) BUCKETS 256
 ORDER BY (user_id, status)
 PROPERTIES (
     "replication_num"         = "3",
-    "enable_persistent_index" = "true",
-    "colocate_with"           = "grp_user"
+    "enable_persistent_index" = "true"
 );
 ```
 
 ### 3.3 DWS: `dws_friend_summary`
 
+Bảng thường (không phải materialized view): MV phải tính lại toàn bộ DWD (hàng chục tỉ dòng) mỗi lần refresh; task mục 6.2 chỉ tính lại user có event mới.
+
 ```sql
-CREATE MATERIALIZED VIEW IF NOT EXISTS dws_friend_summary
-DISTRIBUTED BY HASH(user_id) BUCKETS 32
-REFRESH ASYNC EVERY (INTERVAL 10 MINUTE)
-AS
-SELECT user_id,
-       SUM(IF(status = 'FRIEND',    1, 0)) AS friend_cnt,
-       SUM(IF(status = 'REQUESTED', 1, 0)) AS pending_sent_cnt,
-       SUM(IF(status = 'REVIEWED',  1, 0)) AS pending_received_cnt,
-       SUM(IF(status = 'BLOCKING',  1, 0)) AS blocking_cnt,
-       SUM(IF(status = 'BLOCKED',   1, 0)) AS blocked_cnt,
-       MAX(last_event_time)                AS last_activity
-FROM dwd_friend_status
-GROUP BY user_id;
+CREATE TABLE IF NOT EXISTS dws_friend_summary (
+    user_id               BIGINT       NOT NULL,
+    friend_cnt            BIGINT,
+    pending_sent_cnt      BIGINT,
+    pending_received_cnt  BIGINT,
+    blocking_cnt          BIGINT,
+    blocked_cnt           BIGINT,
+    last_activity         DATETIME,
+    computed_at           DATETIME     COMMENT 'lần tính gần nhất; mốc để lần sau tìm user thay đổi'
+)
+PRIMARY KEY(user_id)
+DISTRIBUTED BY HASH(user_id) BUCKETS 16
+PROPERTIES ("replication_num" = "3");
 ```
 
-### 3.4 (Tuỳ chọn) DWS theo ngày: `dws_friend_daily`
+### 3.4 DWS theo ngày: `dws_friend_daily`
 
 ```sql
 CREATE TABLE IF NOT EXISTS dws_friend_daily (
@@ -186,17 +187,21 @@ CREATE TABLE IF NOT EXISTS dws_friend_daily (
     pending_received_cnt  BIGINT,
     blocking_cnt          BIGINT,
     blocked_cnt           BIGINT,
-    last_activity         DATETIME(3)
+    last_activity         DATETIME,
+    snapshot_at           DATETIME     COMMENT 'lần chụp gần nhất'
 )
 DUPLICATE KEY(dt, user_id)
 PARTITION BY dt
-DISTRIBUTED BY HASH(user_id) BUCKETS 32
-PROPERTIES ("replication_num" = "3");
+DISTRIBUTED BY HASH(user_id) BUCKETS 4
+PROPERTIES (
+    "replication_num"       = "3",
+    "partition_live_number" = "180"
+);
 ```
 
----
-
 ## 4. Nạp dữ liệu (Routine Load)
+
+> Chạy local: `com/tm/infra/docker-compose.yml` có sẵn StarRocks, tự tạo bảng + Routine Load đọc `friend_events` (bản local của DDL: `replication_num = 1`, ít bucket, broker `kafka:9092`, task summary mỗi 1 phút, task daily mỗi 5 phút). Hướng dẫn: [`com/tm/friend-service/README.md`](com/tm/friend-service/README.md#6-xem-dữ-liệu-trên-starrocks).
 
 ### 4.1 Kafka → ODS
 
@@ -243,18 +248,22 @@ FROM KAFKA (
 
 ## 5. Truy vấn
 
-### Hiện tại (không cần điều kiện thời gian)
+### Trạng thái mới nhất (DWD / DWS, giữ vĩnh viễn)
 
-Thời gian đã được xử lý lúc ghi: DWD luôn giữ event mới nhất của mỗi cặp.
+DWD luôn giữ event mới nhất của mỗi cặp. Truy vấn theo 1 user chỉ đọc 1 bucket, bảng sắp theo `(user_id, status)` nên trả về trong vài ms kể cả khi có hàng chục tỉ dòng.
 
 ```sql
--- Q1. Số liệu tổng hợp của user (trễ tối đa = chu kỳ refresh MV)
-SELECT * FROM dws_friend_summary WHERE user_id = ?;
-
--- Q2. Danh sách bạn
-SELECT friend_id, last_event_time AS friend_since
+-- Q1. Số partners ở mỗi status của 1 user (DWD, chính xác tức thì)
+SELECT status, COUNT(*) AS partners
 FROM dwd_friend_status
-WHERE user_id = ? AND status = 'FRIEND';
+WHERE user_id = ?
+GROUP BY status;
+
+-- Q2. Partners ở mỗi status của 1 user là ai (thêm AND status = '...' để lọc 1 status)
+SELECT status, friend_id, last_event_time AS since
+FROM dwd_friend_status
+WHERE user_id = ?
+ORDER BY status, friend_id;
 
 -- Q3. Đang block ai / đang bị ai block
 SELECT friend_id, status
@@ -269,92 +278,105 @@ WHERE user_id = ? AND status IN ('REQUESTED', 'REVIEWED');
 -- Q5. Quan hệ giữa 2 user cụ thể
 SELECT status FROM dwd_friend_status WHERE user_id = ? AND friend_id = ?;
 
--- Q6. Bạn chung của A và B
+-- Q6. Bạn chung của 2 user
 SELECT a.friend_id
 FROM dwd_friend_status a
 JOIN dwd_friend_status b ON a.friend_id = b.friend_id
 WHERE a.user_id = ? AND b.user_id = ?
   AND a.status = 'FRIEND' AND b.status = 'FRIEND';
 
--- Q7. Số bạn chính xác tuyệt đối (không chờ MV refresh)
-SELECT COUNT(*) FROM dwd_friend_status WHERE user_id = ? AND status = 'FRIEND';
+-- Q7. Số lượng theo status cho nhiều user cùng lúc (DWS, trễ tối đa 1 chu kỳ task 4.1)
+--     vd top 100 user nhiều bạn nhất
+SELECT user_id, friend_cnt, pending_sent_cnt, pending_received_cnt, blocking_cnt, blocked_cnt
+FROM dws_friend_summary
+ORDER BY friend_cnt DESC
+LIMIT 100;
 ```
 
-### Tại một thời điểm trong quá khứ (đọc ODS)
-
-> Chỉ dùng được trong **30 ngày gần nhất** (TTL của ODS). Cũ hơn thì dùng `dws_friend_daily` (Q10), chỉ có số lượng theo ngày, không có danh sách.
+### Lịch sử (ODS / DWS daily, giữ 180 ngày)
 
 ```sql
--- Q8. Danh sách bạn của user tại thời điểm :ts (:ts trong 30 ngày gần nhất)
-SELECT friend_id
-FROM (
-    SELECT friend_id, event_type,
-           ROW_NUMBER() OVER (PARTITION BY friend_id
-                              ORDER BY event_time DESC, event_id DESC) AS rn
-    FROM ods_friend_event
-    WHERE user_id = ? AND event_time <= :ts
-) t
-WHERE rn = 1 AND event_type = 'FRIEND';
--- Đổi SELECT friend_id → SELECT COUNT(*) để lấy số lượng,
--- đổi 'FRIEND' → 'BLOCKING' / 'BLOCKED' cho câu hỏi block.
-
--- Q9. Lịch sử quan hệ giữa 2 user trong 30 ngày gần nhất
+-- Q9. Lịch sử event giữa 2 user trong 180 ngày gần nhất
 SELECT event_time, event_type, event_id
 FROM ods_friend_event
 WHERE user_id = ? AND friend_id = ?
 ORDER BY event_time, event_id;
 
--- Q10. Xu hướng số bạn theo ngày, không giới hạn 30 ngày (cần bảng dws_friend_daily)
-SELECT dt, friend_cnt FROM dws_friend_daily
+-- Q10. Xu hướng số lượng theo ngày của 1 user
+SELECT dt, friend_cnt, pending_sent_cnt, pending_received_cnt, blocking_cnt, blocked_cnt
+FROM dws_friend_daily
 WHERE user_id = ? AND dt BETWEEN ? AND ?
 ORDER BY dt;
 ```
 
----
+## 6. Job
 
-## 6. Job ngoài StarRocks
-
-Routine Load, MV refresh, tạo partition, compaction đều do StarRocks tự chạy. Chỉ cần thêm:
+Routine Load, task, tạo / xoá partition theo TTL, compaction đều do StarRocks tự chạy. Giờ của task theo múi giờ StarRocks (`@@time_zone`).
 
 ### 6.1 Monitor Routine Load (bắt buộc)
 
-Routine Load bị `PAUSED` khi vượt `max_error_number` và **không tự resume**. Job (Java + JDBC, cron 1–5 phút):
+Routine Load bị `PAUSED` khi vượt `max_error_number` và **không tự resume**. Cần job giám sát (cron 1–5 phút) + alert:
 
 ```sql
 SHOW ROUTINE LOAD FROM social;              -- đọc cột State, ReasonOfStateChanged, ErrorLogUrls
 RESUME ROUTINE LOAD FOR social.rl_friend_dwd; -- sau khi alert / xử lý nguyên nhân
 ```
 
-Theo dõi thêm độ trễ offset Kafka (consumer lag của group `sr_friend_ods`, `sr_friend_dwd`).
+Theo dõi thêm consumer lag của event-gateway (group `event-gateway`) và số message trong `friend_events_dlq`.
 
-### 6.2 Monitor MV refresh
+### 6.2 Task cập nhật `dws_friend_summary` (10 phút)
+
+```sql
+SUBMIT TASK t_friend_summary_refresh
+SCHEDULE EVERY (INTERVAL 10 MINUTE)
+AS
+INSERT INTO dws_friend_summary
+SELECT user_id,
+       SUM(IF(status = 'FRIEND',    1, 0)),
+       SUM(IF(status = 'REQUESTED', 1, 0)),
+       SUM(IF(status = 'REVIEWED',  1, 0)),
+       SUM(IF(status = 'BLOCKING',  1, 0)),
+       SUM(IF(status = 'BLOCKED',   1, 0)),
+       MAX(last_event_time),
+       NOW()
+FROM dwd_friend_status
+WHERE user_id IN (
+    SELECT DISTINCT user_id FROM ods_friend_event
+    WHERE ingest_time >= (SELECT COALESCE(MAX(computed_at), '1970-01-01') FROM dws_friend_summary) - INTERVAL 5 MINUTE
+      AND event_time  >= (SELECT COALESCE(MAX(computed_at), '1970-01-01') FROM dws_friend_summary) - INTERVAL 1 DAY
+)
+GROUP BY user_id;
+```
+
+- Chỉ tính lại user có event mới trong ODS kể từ lần trước (mốc = `MAX(computed_at)`), ≤ ~120k user / 10 phút ở 100 hành động/s, thay vì quét toàn bộ DWD.
+- Task dừng lâu thì lần sau tự lấy bù từ mốc cũ.
+- Lùi 5 phút để chờ DWD (Routine Load riêng) nạp kịp ODS; nếu `rl_friend_dwd` bị PAUSED lâu hơn thì số của user đó chỉ đúng lại khi user có event kế tiếp → giám sát 6.1.
+- Lần đầu (sau khi nạp dữ liệu ban đầu vào DWD) chạy 1 lần câu tính toàn bộ ở cuối mục 4 của `friend_network.sql`.
+
+### 6.3 Task chụp `dws_friend_daily` (00:05 mỗi ngày)
+
+```sql
+SUBMIT TASK t_friend_daily_snapshot
+SCHEDULE START ('2026-09-25 00:05:00') EVERY (INTERVAL 1 DAY)
+AS
+INSERT /*+SET_VAR(dynamic_overwrite = true)*/ OVERWRITE dws_friend_daily
+SELECT DATE(NOW() - INTERVAL 10 MINUTE), user_id,
+       friend_cnt, pending_sent_cnt, pending_received_cnt,
+       blocking_cnt, blocked_cnt, last_activity, NOW()
+FROM dws_friend_summary;
+```
+
+- Ghi đè cả partition của ngày (`dynamic_overwrite`) nên chạy lại không nhân đôi.
+- ~50M dòng/ngày ≈ 0,5–1 GB nén; giữ 180 ngày.
+
+### 6.4 Xem các lần chạy task
 
 ```sql
 SELECT task_name, state, error_message, create_time, finish_time
 FROM information_schema.task_runs
-WHERE definition LIKE '%dws_friend_summary%'
-ORDER BY create_time DESC
-LIMIT 20;
+WHERE task_name IN ('t_friend_summary_refresh', 't_friend_daily_snapshot')
+ORDER BY create_time DESC LIMIT 20;
 ```
-
-### 6.3 (Tuỳ chọn) Snapshot hằng ngày
-
-StarRocks 3.3+ có task scheduler built-in:
-
-```sql
-SUBMIT TASK t_friend_daily_snapshot
-SCHEDULE START ('2026-09-24 00:05:00') EVERY (INTERVAL 1 DAY)
-AS
-INSERT INTO dws_friend_daily
-SELECT CURRENT_DATE() - INTERVAL 1 DAY, user_id,
-       friend_cnt, pending_sent_cnt, pending_received_cnt,
-       blocking_cnt, blocked_cnt, last_activity
-FROM dws_friend_summary;
-```
-
-Bản cũ hơn: chạy câu `INSERT` này từ Java scheduler (Spring `@Scheduled` / Quartz / cron). Nếu chạy nhiều instance, dùng distributed lock (vd ShedLock).
-
-Kết nối JDBC: `jdbc:mysql://<fe-host>:9030/social?socketTimeout=3600000` (MySQL Connector/J).
 
 ---
 
@@ -372,7 +394,7 @@ Kết nối JDBC: `jdbc:mysql://<fe-host>:9030/social?socketTimeout=3600000` (My
 
 Kỳ vọng DWD của A sau từng bước:
 
-| Sau T | A→B | A→C | Q2 (bạn của A) | friend_cnt |
+| Sau T | A→B | A→C | bạn của A | friend_cnt |
 |---|---|---|---|---|
 | 1 | REQUESTED | – | ∅ | 0 |
 | 2 | FRIEND | – | B | 1 |
@@ -382,10 +404,8 @@ Kỳ vọng DWD của A sau từng bước:
 
 Kỳ vọng sau T5:
 
-- `dws_friend_summary` của A: `friend_cnt = 1, blocking_cnt = 1`
-- `dws_friend_summary` của B: `friend_cnt = 0, blocked_cnt = 1`
-- Q8 với `:ts` = sau T4 → A có 2 bạn (B, C)
-- Q8 với `:ts` = sau T5 → A có 1 bạn (C)
+- Q1 của A: `FRIEND 1, BLOCKING 1`; Q2 của A: `BLOCKING → B`, `FRIEND → C`
+- `dws_friend_summary` (sau 1 chu kỳ task) của A: `friend_cnt = 1, blocking_cnt = 1`; của B: `friend_cnt = 0, blocked_cnt = 1`
 
 ### 7.2 Event đến trễ
 
@@ -424,7 +444,8 @@ Hiện có:
     │   │   └── {router,handler,controller,dao,utils,configs}/   # mỗi layer 1 BUILD.bazel
     │   └── test/                 # BUILD.bazel riêng cho js_test
     └── infra/
-        └── docker-compose.yml    # MongoDB + Kafka + event-gateway + friend-service cho local
+        ├── docker-compose.yml    # MongoDB, Kafka, StarRocks, event-gateway, friend-service cho local
+        └── starrocks/            # init StarRocks local: schema (01_schema.sql), Routine Load, init.sh
 ```
 
 Gợi ý khi tách nhỏ phần SQL:
@@ -438,11 +459,12 @@ friend-network/
 │   ├── 03_dwd_friend_status.sql
 │   ├── 04_dws_friend_summary.sql
 │   ├── 05_dws_friend_daily.sql
+│   ├── 20_task_friend_summary_refresh.sql
 │   ├── 10_rl_friend_ods.sql
 │   ├── 11_rl_friend_dwd.sql
 │   ├── 20_task_daily_snapshot.sql
 │   └── queries/            # Q1–Q10
-├── jobs/                    # Java: monitor routine load, MV, snapshot (nếu < 3.3)
+├── jobs/                    # monitor routine load, task
 └── test/
     └── scenarios/           # dữ liệu mẫu JSON cho mục 7
 ```
@@ -454,11 +476,11 @@ friend-network/
 1. **Unblock**: chưa có event mở block. Hiện block chỉ kết thúc khi có event khác cho cặp đó. Nếu có tính năng unblock, cần thêm status (vd `UNBLOCK`) và định nghĩa trạng thái sau khi unblock.
 2. ~~**Block 2 chiều**~~: đã chốt **không cho block ngược**. `friend-service` trả `409 BLOCKED_BY_TARGET` khi user đang bị block cố block lại.
 3. ~~**Trùng `event_time`**~~: `friend-service` đảm bảo `event_time` của 1 cặp luôn tăng: lấy `max(now, last_event_time + 1ms)` trong transaction, kể cả khi đồng hồ các instance lệch nhau.
-4. **Số bucket / replication**: ước lượng theo số cặp thực tế trước khi tạo bảng (đổi bucket sau phải tạo lại bảng).
-5. ~~**TTL ODS**~~: đã chốt **30 ngày**. Truy vấn as-of (Q8, Q9) chỉ trong 30 ngày; nếu cần xu hướng dài hơn thì phải bật `dws_friend_daily` (mục 3.4, 6.3).
+4. **Số bucket / replication**: đã tính cho 50M user × 500–1000 quan hệ (mục 12); kiểm lại bằng số liệu thật trước khi tạo bảng (đổi bucket sau phải ghi lại dữ liệu).
+5. ~~**TTL**~~: đã chốt: ODS và `dws_friend_daily` giữ **180 ngày**; DWD và `dws_friend_summary` giữ vĩnh viễn (chỉ cần trạng thái mới nhất).
 6. **Xác thực**: API nhận `userId` trên path, chưa kiểm tra người gọi có đúng là user đó. Cần gắn auth (JWT / gateway) trước khi mở ra ngoài.
 7. **Unblock** (liên quan #1): service chưa có API unblock vì chưa định nghĩa status.
-8. **Q8 bỏ sót cặp cũ**: ODS chỉ giữ 30 ngày, nên cặp có event cuối cùng cũ hơn 30 ngày (vd là bạn từ 2 tháng trước, không đổi gì) không còn dòng nào trong ODS → Q8 không thấy, kể cả khi `:ts` nằm trong 30 ngày. Cách xử lý: snapshot `dwd_friend_status` định kỳ làm mốc, hoặc chấp nhận giới hạn.
+8. ~~**Truy vấn tại thời điểm quá khứ**~~: không cần (chỉ cần trạng thái mới nhất), đã bỏ truy vấn as-of trên ODS.
 9. **Mất event khi Kafka lỗi**: friend-service gửi event lên Kafka ngay sau khi commit MongoDB, không có outbox. Kafka lỗi lúc đó (sau khi kafkajs retry) thì hành động vẫn lưu nhưng event bị mất, StarRocks lệch với MongoDB cho cặp đó tới event kế tiếp. Log `event publish failed after db commit` có đủ nội dung event để gửi bù bằng tay.
 
 ---
@@ -610,7 +632,7 @@ Base path `/v1`. `userId`, `targetId` là số nguyên dương ≤ 2^53−1 (gi�
 
 Danh sách phân trang theo `friend_id`: truyền `next_after` của trang trước vào `after`. `limit` mặc định 50, tối đa 200.
 
-Truy vấn quá khứ (Q8–Q10) chỉ có ở StarRocks.
+Xu hướng theo ngày (Q10) và lịch sử event (Q9) chỉ có ở StarRocks.
 
 Lỗi trả dạng `{"error": "<CODE>", "message": "..."}`, mã HTTP 400 / 403 / 409 / 500.
 
@@ -757,3 +779,22 @@ bazel run //:gazelle                                                            
 ```
 
 Partition: friend-service (kafkajs) dùng murmur2, gateway (sarama) dùng FNV-1a trên key. Thứ tự vẫn giữ vì mỗi topic chỉ có 1 producer và key giống nhau luôn vào cùng partition của topic đó; nếu thêm producer khác cùng ghi 1 topic thì phải thống nhất partitioner.
+
+---
+
+## 12. Quy mô và dung lượng (ước lượng)
+
+Giả định: **50M user**, trung bình **500–1000 quan hệ / user** (tính cả lời mời, block, quan hệ đã huỷ), **100 hành động / s** (200 event / s). Chưa qua thử tải.
+
+| Bảng | Dòng | Nén, 1 bản sao | Giữ | Bucket |
+|---|---|---|---|---|
+| `ods_friend_event` | ~17M / ngày → ~3 tỉ (180 ngày) | ~0,5–0,8 GB / ngày → ~90–150 GB | 180 ngày | 4 / partition ngày |
+| `dwd_friend_status` | 25–50 tỉ, tăng dần | ~0,5–1,5 TB | vĩnh viễn | 256 |
+| `dws_friend_summary` | ~50M | ~1–2 GB | vĩnh viễn | 16 |
+| `dws_friend_daily` | 50M / ngày → ~9 tỉ (180 ngày) | ~0,5–1 GB / ngày → ~90–180 GB | 180 ngày | 4 / partition ngày |
+| MongoDB `friendships` | 25–50 tỉ document | ~6–12 TB (kèm index) | vĩnh viễn | shard theo `user_id` |
+
+- Luồng ghi (200 event / s) nhẹ với Kafka, event-gateway, Routine Load.
+- DWD chiếm phần lớn dung lượng StarRocks (×3 bản sao ≈ 1,5–4,5 TB): BE cần NVMe và RAM lớn (bảng Primary Key giữ index cho mọi dòng).
+- `dws_friend_summary` dùng task cập nhật tăng dần (mục 6.2): mỗi 10 phút chỉ ~120k user thay đổi (~120M dòng DWD), thay vì quét 25–50 tỉ dòng.
+- Truy vấn theo 1 user (Q1–Q6) đọc 1 bucket, vài ms – vài chục ms.
