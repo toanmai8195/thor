@@ -2,6 +2,8 @@
 package event
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -70,4 +72,22 @@ func (e FriendEvent) Validate() error {
 		return fmt.Errorf("event_time phải theo định dạng yyyy-MM-dd HH:mm:ss.SSS: %q", e.EventTime)
 	}
 	return nil
+}
+
+// Decode đọc 1 message JSON thành FriendEvent và kiểm tra contract.
+// Field lạ, JSON hỏng hoặc sai contract đều trả lỗi.
+func Decode(value []byte) (FriendEvent, error) {
+	var e FriendEvent
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&e); err != nil {
+		return FriendEvent{}, fmt.Errorf("json không hợp lệ: %w", err)
+	}
+	if dec.More() {
+		return FriendEvent{}, fmt.Errorf("json không hợp lệ: có dữ liệu thừa sau event")
+	}
+	if err := e.Validate(); err != nil {
+		return FriendEvent{}, err
+	}
+	return e, nil
 }

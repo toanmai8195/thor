@@ -1,6 +1,7 @@
 # Môi trường local: MongoDB (replica set 1 node, cần cho transaction) + Kafka (KRaft)
 # + event-gateway (Go) + friend-service (TypeScript)
-#   friend-service ──HTTP──► event-gateway ──► Kafka friend_events ──► StarRocks
+#   friend-service ──► Kafka friend_service_events ──► event-gateway ──► Kafka friend_events ──► StarRocks
+#                                                           └─ sai contract ──► Kafka friend_events_dlq
 #
 #   bazel run --config=linux-arm64 //com/tm/event-gateway:event_gateway_docker         # build + load image
 #   bazel run --config=linux-arm64 //com/tm/friend-service/src:friend_service_docker   # build + load image
@@ -47,10 +48,13 @@ services:
   event-gateway:
     # Image do Bazel build (//com/tm/event-gateway:event_gateway_docker)
     image: com.tm.go.event_gateway:v1.0.0
-    ports: ["8080:8080"]
+    ports: ["8080:8080"] # chỉ /healthz
     environment:
       KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: event-gateway
+      KAFKA_INPUT_TOPIC: friend_service_events
       KAFKA_FRIEND_TOPIC: friend_events
+      KAFKA_DLQ_TOPIC: friend_events_dlq
     depends_on:
       kafka: { condition: service_healthy }
 
@@ -61,11 +65,12 @@ services:
     environment:
       MONGO_URI: mongodb://mongo:27017/?directConnection=true
       MONGO_DB: friend_network
-      EVENT_GATEWAY_URL: http://event-gateway:8080
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: friend_service_events
       WORKER_ID: "0"
     depends_on:
       mongo: { condition: service_healthy }
-      event-gateway: { condition: service_started }
+      kafka: { condition: service_healthy }
 
 volumes:
   mongo-data:

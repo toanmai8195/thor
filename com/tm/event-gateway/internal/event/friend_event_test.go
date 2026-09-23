@@ -53,3 +53,25 @@ func TestKey(t *testing.T) {
 		t.Fatalf("Key() = %q, muốn 1001", got)
 	}
 }
+
+func TestDecode(t *testing.T) {
+	ok := `{"user_id":1,"friend_id":2,"event_type":"FRIEND","event_time":"2026-09-23 10:10:00.123","event_id":"0228440659126648833","source":"friend-service"}`
+	e, err := Decode([]byte(ok))
+	if err != nil || e.UserID != 1 || e.EventType != StatusFriend {
+		t.Fatalf("Decode(ok) = %+v, %v", e, err)
+	}
+	bad := map[string]string{
+		"json hỏng":     `{"user_id":`,
+		"field lạ":      `{"user_id":1,"friend_id":2,"event_type":"FRIEND","event_time":"2026-09-23 10:10:00.123","event_id":"0228440659126648833","x":1}`,
+		"sai contract":  `{"user_id":1,"friend_id":2,"event_type":"HUG","event_time":"2026-09-23 10:10:00.123","event_id":"0228440659126648833"}`,
+		"2 object":      ok + ok,
+		"user_id chuỗi": `{"user_id":"1","friend_id":2,"event_type":"FRIEND","event_time":"2026-09-23 10:10:00.123","event_id":"0228440659126648833"}`,
+	}
+	for name, v := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode([]byte(v)); err == nil {
+				t.Fatal("phải báo lỗi")
+			}
+		})
+	}
+}

@@ -1,7 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library")
 load("//tools/rules:com_tm_container.bzl", "com_tm_go_image")
 
-# event-gateway: nhận event qua HTTP, kiểm tra contract, gửi Kafka cho StarRocks.
+# event-gateway: đọc Kafka friend_service_events, kiểm tra contract, gửi friend_events (StarRocks) / DLQ.
 #   bazel run //com/tm/event-gateway:event_gateway
 #   bazel test //com/tm/event-gateway/...
 #   bazel run --config=linux-arm64 //com/tm/event-gateway:event_gateway_docker
@@ -20,7 +20,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//com/tm/event-gateway/internal/config",
-        "//com/tm/event-gateway/internal/handler",
+        "//com/tm/event-gateway/internal/consumer",
         "//com/tm/event-gateway/internal/producer",
+        "//com/tm/event-gateway/internal/relay",
     ],
 )

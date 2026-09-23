@@ -1,9 +1,9 @@
 # friend-service: setup và chạy thử
 
-Service Friend Network (TypeScript, Express, MongoDB). Event gửi sang [event-gateway](../event-gateway/README.md) (Go) để lên Kafka. Thiết kế, API và schema: [README gốc, mục 10](../../../README.md#10-friend-service-nodejs--mongodb).
+Service Friend Network (TypeScript, Express, MongoDB, Kafka). Event ghi vào Kafka topic `friend_service_events`, [event-gateway](../event-gateway/README.md) (Go) kiểm tra rồi chuyển sang `friend_events` cho StarRocks. Thiết kế, API và schema: [README gốc, mục 10](../../../README.md#10-friend-service-nodejs--mongodb).
 
 ```
-friend-service ──HTTP──► event-gateway ──► Kafka friend_events ──► StarRocks
+friend-service ──► Kafka friend_service_events ──► event-gateway ──► Kafka friend_events ──► StarRocks
 ```
 
 ## Cần cài
@@ -43,7 +43,7 @@ docker compose logs -f friend-service    # chờ tới dòng "http listening"
 | Service | Từ máy host | Trong network compose |
 |---|---|---|
 | friend-service | `localhost:3000` | `friend-service:3000` |
-| event-gateway | `localhost:8080` | `event-gateway:8080` |
+| event-gateway (chỉ `/healthz`) | `localhost:8080` | `event-gateway:8080` |
 | MongoDB (replica set `rs0`) | `localhost:27017` | `mongo:27017` |
 | Kafka | `localhost:29092` | `kafka:9092` |
 
@@ -68,13 +68,18 @@ Danh sách đầy đủ các API ở README gốc, mục 10.6.
 Chạy trong `com/tm/infra`:
 
 ```bash
+# event friend-service ghi (chưa kiểm tra)
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic friend_service_events --from-beginning --property print.key=true
+
+# event đã qua event-gateway (StarRocks đọc topic này)
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic friend_events --from-beginning --property print.key=true
 ```
 
-Mỗi hành động sinh 2 event đối xứng (vd `1→2 REQUESTED` và `2→1 REVIEWED`), friend-service gửi sang event-gateway, gateway gửi Kafka.
+Mỗi hành động sinh 2 event đối xứng (vd `1→2 REQUESTED` và `2→1 REVIEWED`).
 
-Không thấy event: xem `docker compose logs event-gateway` và tìm dòng `event publish failed after db commit` trong log friend-service.
+Có event ở `friend_service_events` mà không có ở `friend_events`: xem `docker compose logs event-gateway` (event sai contract nằm ở `friend_events_dlq`). Không có ở cả 2: tìm dòng `event publish failed after db commit` trong log friend-service.
 
 ## 5. Xem dữ liệu MongoDB
 
@@ -100,7 +105,7 @@ Sửa event-gateway thì build lại `//com/tm/event-gateway:event_gateway_docke
 
 ## Chạy service trên máy (không qua container)
 
-Vẫn cần MongoDB và event-gateway từ compose, nhưng không start container `friend-service` để cổng 3000 còn trống:
+Vẫn cần MongoDB, Kafka và event-gateway từ compose, nhưng không start container `friend-service` để cổng 3000 còn trống:
 
 ```bash
 cd com/tm/infra && docker compose up -d mongo kafka event-gateway && cd -
@@ -113,7 +118,7 @@ pnpm install
 pnpm dev          # tsx watch, tự reload khi sửa code
 ```
 
-Mặc định service kết nối MongoDB `localhost:27017` và event-gateway `http://localhost:8080`. Có thể đổi bằng biến môi trường, xem README gốc mục 10.7.
+Mặc định service kết nối MongoDB `localhost:27017` và Kafka `localhost:29092`. Có thể đổi bằng biến môi trường, xem README gốc mục 10.7.
 
 ## Test
 

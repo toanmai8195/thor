@@ -1,10 +1,12 @@
-// event-gateway: nhận event từ các service qua HTTP, kiểm tra contract rồi gửi Kafka cho StarRocks.
+// event-gateway: đọc event friend-service gửi vào Kafka, kiểm tra contract rồi chuyển tiếp cho StarRocks.
 //
-//	friend-service ──POST /v1/friend-events──► event-gateway ──► Kafka friend_events ──► StarRocks
+//	friend-service ──► Kafka friend_service_events ──► event-gateway ──► Kafka friend_events ──► StarRocks
+//	                                                          └─ sai contract ──► Kafka friend_events_dlq
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +17,9 @@ import (
 	"time"
 
 	"thor/com/tm/event-gateway/internal/config"
-	"thor/com/tm/event-gateway/internal/handler"
+	"thor/com/tm/event-gateway/internal/consumer"
 	"thor/com/tm/event-gateway/internal/producer"
+	"thor/com/tm/event-gateway/internal/relay"
 )
 
 const (
@@ -44,32 +47,43 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer p.Close()
-	log.Info("kafka producer connected", "brokers", cfg.KafkaBrokers, "topic", cfg.FriendTopic)
+	log.Info("kafka producer connected", "brokers", cfg.KafkaBrokers)
 
-	mux := http.NewServeMux()
-	handler.New(p, cfg.FriendTopic, log).Routes(mux)
+	c, err := consumer.New(cfg.KafkaBrokers, cfg.KafkaClientID, cfg.GroupID, cfg.InputTopic,
+		relay.New(p, cfg.FriendTopic, cfg.DLQTopic, log), log)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           mux,
+		Handler:           healthMux(c),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	errCh := make(chan error, 1)
 	go func() {
-		log.Info("http listening", "port", cfg.Port)
-		errCh <- srv.ListenAndServe()
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("http server failed", "err", err)
+			stop()
+		}
 	}()
 
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-	}
+	log.Info("consuming", "group", cfg.GroupID, "input", cfg.InputTopic, "output", cfg.FriendTopic, "dlq", cfg.DLQTopic)
+	runErr := c.Run(ctx)
+
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	_ = srv.Shutdown(shutdownCtx)
+	return runErr
+}
+
+// healthMux: /healthz luôn 200 khi process sống; "consuming" = đã được chia partition.
+func healthMux(c *consumer.Consumer) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true, "consuming": c.Ready()})
+	})
+	return mux
 }

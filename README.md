@@ -15,9 +15,12 @@ Nguyên tắc cốt lõi: **mỗi cặp có hướng (`user_id → friend_id`) c
 
 ```
 client ──► friend-service (TypeScript) ──► MongoDB (friendships)
-                    │ commit xong: HTTP POST /v1/friend-events
+                    │ commit xong
                     ▼
-           event-gateway (Go): kiểm tra contract, gửi Kafka
+           Kafka (friend_service_events)
+                    │ consumer group
+                    ▼
+           event-gateway (Go): kiểm tra contract ──(sai)──► Kafka (friend_events_dlq)
                     │
                     ▼
            Kafka (friend_events) ──┬─ Routine Load ──► ODS  ods_friend_event      (lịch sử, append)
@@ -36,13 +39,13 @@ client ──► friend-service (TypeScript) ──► MongoDB (friendships)
 
 ODS và DWD **cùng đọc song song từ Kafka**, DWD không đọc từ ODS.
 
-`friend-service` là nguồn sự thật cho API online; StarRocks là bản sao phục vụ phân tích (trễ vài giây ở DWD, ≤ 10 phút ở DWS). Chỉ `event-gateway` ghi vào Kafka (mục 11).
+`friend-service` là nguồn sự thật cho API online; StarRocks là bản sao phục vụ phân tích (trễ vài giây ở DWD, ≤ 10 phút ở DWS). Chỉ `event-gateway` ghi vào topic `friend_events` mà StarRocks đọc (mục 11).
 
 ---
 
 ## 2. Event contract (phía service)
 
-> Đã hiện thực: `com/tm/friend-service/` sinh event (mục 10), `com/tm/event-gateway/` kiểm tra contract và gửi Kafka (mục 11).
+> Đã hiện thực: `com/tm/friend-service/` sinh event (mục 10), `com/tm/event-gateway/` đọc lại, kiểm tra contract rồi chuyển sang `friend_events` (mục 11). Topic `friend_events` chỉ chứa event đúng contract.
 
 ### 2.1 Status
 
@@ -408,9 +411,9 @@ Hiện có:
 ├── friend_network.sql            # toàn bộ DDL, Routine Load, task, query Q1–Q10
 ├── tools/rules/com_tm_container.bzl   # macro binary + OCI image: com_tm_go_image, com_tm_js_image
 └── com/tm/
-    ├── event-gateway/            # Go: nhận event qua HTTP → Kafka (mục 11)
+    ├── event-gateway/            # Go: Kafka friend_service_events → friend_events (mục 11)
     │   ├── BUILD.bazel  main.go  README.md
-    │   └── internal/{config,event,handler,producer}/
+    │   └── internal/{config,consumer,event,producer,relay}/
     ├── friend-service/           # Node.js + MongoDB (mục 10), cấu trúc layer ở 10.2
     │   ├── BUILD.bazel           # npm deps, package.json, tsconfig
     │   ├── README.md             # setup và chạy thử
@@ -456,13 +459,13 @@ friend-network/
 6. **Xác thực**: API nhận `userId` trên path, chưa kiểm tra người gọi có đúng là user đó. Cần gắn auth (JWT / gateway) trước khi mở ra ngoài.
 7. **Unblock** (liên quan #1): service chưa có API unblock vì chưa định nghĩa status.
 8. **Q8 bỏ sót cặp cũ**: ODS chỉ giữ 30 ngày, nên cặp có event cuối cùng cũ hơn 30 ngày (vd là bạn từ 2 tháng trước, không đổi gì) không còn dòng nào trong ODS → Q8 không thấy, kể cả khi `:ts` nằm trong 30 ngày. Cách xử lý: snapshot `dwd_friend_status` định kỳ làm mốc, hoặc chấp nhận giới hạn.
-9. **Mất event khi gateway / Kafka lỗi**: friend-service gửi event sang event-gateway ngay sau khi commit MongoDB, không có outbox. Gateway hoặc Kafka lỗi lúc đó (sau 3 lần thử) thì hành động vẫn lưu nhưng event bị mất, StarRocks lệch với MongoDB cho cặp đó tới event kế tiếp. Log `event publish failed after db commit` có đủ nội dung event để gửi bù bằng tay.
+9. **Mất event khi Kafka lỗi**: friend-service gửi event lên Kafka ngay sau khi commit MongoDB, không có outbox. Kafka lỗi lúc đó (sau khi kafkajs retry) thì hành động vẫn lưu nhưng event bị mất, StarRocks lệch với MongoDB cho cặp đó tới event kế tiếp. Log `event publish failed after db commit` có đủ nội dung event để gửi bù bằng tay.
 
 ---
 
 ## 10. Friend service (Node.js + MongoDB)
 
-Service nhận hành động của user qua REST API, lưu trạng thái trong MongoDB và gửi event (contract mục 2) sang event-gateway (mục 11) để lên Kafka. Code ở `com/tm/friend-service/`, Docker ở `com/tm/infra/`.
+Service nhận hành động của user qua REST API, lưu trạng thái trong MongoDB và gửi event (contract mục 2) lên Kafka topic `friend_service_events`; event-gateway (mục 11) kiểm tra rồi chuyển sang `friend_events`. Code ở `com/tm/friend-service/`, Docker ở `com/tm/infra/`.
 
 ### 10.1 Công nghệ
 
@@ -473,7 +476,7 @@ Service nhận hành động của user qua REST API, lưu trạng thái trong M
 | HTTP | Express 5 | lỗi async tự đi vào error handler |
 | DI | awilix 12 | không dùng decorator; mỗi layer 1 file `*-module.ts` |
 | DB | MongoDB 7, **replica set** | cần replica set để dùng transaction (local: 1 node) |
-| Gửi event | `fetch` (Node built-in) → event-gateway | timeout 3 s, tối đa 3 lần khi lỗi mạng / 5xx |
+| Kafka client | kafkajs | producer idempotent, `acks=all`, ghi topic `friend_service_events` |
 | Test | `node:test` | chạy bằng Bazel (`js_test`) hoặc `tsx` khi dev |
 | Package manager | pnpm 9 | `pnpm-lock.yaml` là nguồn cho Bazel |
 | Build / image | Bazel 8.7: `aspect_rules_ts` 3.10.1 (tsc), `aspect_rules_js` 3.4.1, `rules_nodejs` (Node 22.22.3), `rules_oci` | macro `ts_layer`, `com_tm_js_image`; image trên `debian:bookworm-slim` |
@@ -486,17 +489,17 @@ Mỗi layer là 1 package Bazel (`ts_layer` = `ts_project` với tsconfig chung,
 MainServer (src/server.ts, container.ts, http-server.ts)
    │ dựng DI container, start/stop lifecycle
    ▼
-router ─► handler ─► controller ─► dao ─► MongoDB / event-gateway
+router ─► handler ─► controller ─► dao ─► MongoDB / Kafka
                                           utils: dùng chung; configs: chỉ MainServer đọc
 ```
 
 | Layer | Vị trí | Việc | Không được |
 |---|---|---|---|
-| MainServer | `src/server.ts`, `src/container.ts`, `src/http-server.ts` | đọc config, dựng container từ module các layer, start lifecycle theo thứ tự, shutdown | chứa logic, tự tạo MongoDB / client gateway |
+| MainServer | `src/server.ts`, `src/container.ts`, `src/http-server.ts` | đọc config, dựng container từ module các layer, start lifecycle theo thứ tự, shutdown | chứa logic, tự tạo MongoDB / Kafka |
 | Router | `src/router/` | map method + path → handler | parse request, gọi controller |
 | Handler | `src/handler/` | parse/validate tham số HTTP, gọi Controller, ghi response, map lỗi → HTTP status, health check | chứa luật nghiệp vụ, đụng DB |
-| Controller | `src/controller/` | luật chuyển trạng thái (`plan()`), transaction ghi 2 chiều, gửi event sang gateway sau commit, truy vấn | biết về HTTP |
-| Dao | `src/dao/` | MongoDB (`friendships`, transaction, index) và client HTTP gọi event-gateway | chứa luật nghiệp vụ |
+| Controller | `src/controller/` | luật chuyển trạng thái (`plan()`), transaction ghi 2 chiều, gửi event Kafka sau commit, truy vấn | biết về HTTP |
+| Dao | `src/dao/` | MongoDB (`friendships`, transaction, index) và Kafka producer | chứa luật nghiệp vụ |
 | Utils | `src/utils/` | `DomainError`, snowflake `event_id`, format thời gian, logger, `Lifecycle` | phụ thuộc layer khác |
 | Configs | `src/configs/` | đọc biến môi trường (10.7) | được layer khác đọc trực tiếp |
 
@@ -507,7 +510,7 @@ Mỗi layer có 1 file `*-module.ts` đăng ký thành phần của nó vào con
 | Module | Đăng ký | Lifecycle |
 |---|---|---|
 | `utils/utils-module.ts` | `log`, `nextId` | |
-| `dao/dao-module.ts` | `mongoClient`, `db`, `runInTransaction`, `friendshipDao`, `eventPublisher`, `pingDb` | `mongoLifecycle`: connect + tạo index / close |
+| `dao/dao-module.ts` | `mongoClient`, `db`, `runInTransaction`, `friendshipDao`, `kafkaProducer`, `eventPublisher`, `pingDb` | `mongoLifecycle`: connect + tạo index / close; `kafkaLifecycle`: connect / disconnect producer |
 | `controller/controller-module.ts` | `friendController` | |
 | `handler/handler-module.ts` | `friendHandler`, `healthHandler`, `errorHandler` | |
 | `router/router-module.ts` | `router` | |
@@ -516,7 +519,7 @@ Mỗi layer có 1 file `*-module.ts` đăng ký thành phần của nó vào con
 - Mọi thành phần là singleton; factory lấy dependency bằng destructuring (`InjectionMode.PROXY`), vd `({ db }) => new FriendshipDao(db)`.
 - Class nghiệp vụ (`FriendController`, `FriendshipDao`...) không import awilix, nhận dependency qua constructor → test dùng Dao giả trực tiếp (`test/controller.test.ts`).
 - Mỗi module khai báo phần config nó cần (`DaoSettings`, `ControllerSettings`...) thay vì phụ thuộc layer Configs.
-- `server.ts` start theo `LIFECYCLE_ORDER` (mongo → http), shutdown (SIGINT / SIGTERM) dừng ngược lại rồi `container.dispose()`.
+- `server.ts` start theo `LIFECYCLE_ORDER` (mongo → kafka → http), shutdown (SIGINT / SIGTERM) dừng ngược lại rồi `container.dispose()`.
 - `test/container.test.ts` resolve mọi registration mà không kết nối thật: thiếu / sai tên dependency là test fail.
 
 Thêm thành phần mới: viết class / hàm như bình thường → đăng ký trong `*-module.ts` của layer đó → thêm kiểu vào `*Cradle` của module; nếu cần start/stop thì đăng ký `Lifecycle` và thêm tên vào `LIFECYCLE_ORDER`.
@@ -529,13 +532,14 @@ POST /v1/users/1/requests/2
        a. đọc 2 document: 1→2 và 2→1
        b. kiểm tra luật chuyển trạng thái (10.5)
        c. upsert 2 document friendships (2 chiều, cùng event_time)
-  2. commit thành công → POST 2 event sang event-gateway /v1/friend-events (1 request)
-     gateway gửi Kafka topic friend_events, key = user_id, trả 200 khi Kafka đã ghi
+  2. commit thành công → gửi 2 event lên Kafka friend_service_events (1 lần send, key = user_id, acks=all)
+     event-gateway đọc, kiểm tra contract, chuyển sang friend_events (mục 11)
   3. trả 200/201
 ```
 
 - Transaction lỗi hoặc vi phạm luật → không gửi event nào.
-- Gateway / Kafka lỗi sau khi đã commit (timeout, lỗi mạng hoặc 5xx; thử tối đa 3 lần): service vẫn trả thành công vì hành động đã lưu, và log `event publish failed after db commit` kèm nội dung 2 event. Gateway trả 4xx (event sai contract) thì không thử lại. **Event đó không tới được DW** (xem vấn đề mở ở mục 9).
+- Kafka lỗi sau khi đã commit (kafkajs đã tự retry): service vẫn trả thành công vì hành động đã lưu, và log `event publish failed after db commit` kèm nội dung 2 event.
+- event-gateway dừng không làm mất event: event nằm chờ trong `friend_service_events`, gateway chạy lại thì đọc tiếp từ offset đã commit. **Event đó không tới được DW** (xem vấn đề mở ở mục 9).
 - Đồng thời: 2 request cùng cặp chạy song song thì MongoDB báo write conflict, transaction tự retry và thấy trạng thái mới → chỉ 1 request thành công, còn lại trả `409`.
 
 ### 10.4 MongoDB schema
@@ -627,9 +631,9 @@ curl localhost:3000/v1/users/1/summary
 | `PORT` | `3000` | cổng HTTP |
 | `MONGO_URI` | `mongodb://localhost:27017/?directConnection=true` | phải trỏ tới replica set |
 | `MONGO_DB` | `friend_network` | |
-| `EVENT_GATEWAY_URL` | `http://localhost:8080` | base URL của event-gateway |
-| `EVENT_GATEWAY_TIMEOUT_MS` | `3000` | timeout mỗi lần gọi |
-| `EVENT_GATEWAY_MAX_ATTEMPTS` | `3` | số lần gửi tối đa khi lỗi mạng / timeout / 5xx |
+| `KAFKA_BROKERS` | `localhost:29092` | danh sách cách nhau bởi dấu phẩy |
+| `KAFKA_TOPIC` | `friend_service_events` | topic friend-service ghi, event-gateway đọc |
+| `KAFKA_CLIENT_ID` | `friend-service` | |
 | `EVENT_SOURCE` | `friend-service` | field `source` của event |
 | `WORKER_ID` | `0` | 0–1023, **mỗi instance 1 giá trị khác nhau** để `event_id` không trùng |
 
@@ -646,13 +650,13 @@ Service build bằng macro `com_tm_js_image` (`tools/rules/com_tm_container.bzl`
 | `//com/tm/friend-service/src/<layer>` | `ts_project` của từng layer (biên dịch + typecheck) |
 | `//com/tm/friend-service/src:friend_service_image` | `oci_image`: Node toolchain + node_modules + app |
 | `//com/tm/friend-service/src:friend_service_docker` | load image `com.tm.js.friend_service:v1.0.0` vào Docker |
-| `//com/tm/friend-service/test:<tên>_test` | `js_test` cho mỗi `test/*.test.ts`: `container`, `controller`, `event_gateway_client`, `friendship_rules`, `params`, `utils` |
+| `//com/tm/friend-service/test:<tên>_test` | `js_test` cho mỗi `test/*.test.ts`: `container`, `controller`, `event_publisher`, `friendship_rules`, `params`, `utils` |
 
 ```bash
 # test
 bazel test //com/tm/friend-service/test/...
 
-# chạy local (cần MongoDB + event-gateway, xem bên dưới)
+# chạy local (cần MongoDB + Kafka, xem bên dưới)
 bazel run //com/tm/friend-service/src:friend_service
 
 # build image + load vào Docker (chọn đúng kiến trúc máy chạy container)
@@ -672,7 +676,7 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic friend_events --from-beginning --property print.key=true
 ```
 
-Chạy `bazel run ...:friend_service` trên máy thay cho container: `docker compose up -d mongo kafka event-gateway` (không start `friend-service` để trống port 3000).
+Chạy `bazel run ...:friend_service` trên máy thay cho container: `docker compose up -d mongo kafka event-gateway` (không start `friend-service` để trống port 3000; gateway cần chạy để event tới `friend_events`).
 
 Kafka từ máy host ở `localhost:29092`; StarRocks Routine Load trong cùng network dùng `kafka:9092`.
 
@@ -686,64 +690,61 @@ Dev không qua Bazel (trong `com/tm/friend-service`): `pnpm dev` (tsx watch), `p
 
 ## 11. Event gateway (Go)
 
-Service Go đứng giữa friend-service và Kafka: nhận event qua HTTP, kiểm tra đúng contract mục 2.3, gửi lên topic `friend_events` cho StarRocks Routine Load. Code ở `com/tm/event-gateway/`, hướng dẫn chạy ở [`com/tm/event-gateway/README.md`](com/tm/event-gateway/README.md).
+Service Go đứng giữa friend-service và StarRocks: đọc event friend-service ghi vào Kafka, kiểm tra đúng contract mục 2.3, chuyển event hợp lệ sang topic `friend_events` cho StarRocks Routine Load, event sai sang topic dead letter. Code ở `com/tm/event-gateway/`, hướng dẫn chạy ở [`com/tm/event-gateway/README.md`](com/tm/event-gateway/README.md).
 
 ```
-friend-service ──POST /v1/friend-events──► event-gateway ──► Kafka friend_events ──► StarRocks (ODS, DWD)
+friend-service ──► friend_service_events ──► event-gateway ──► friend_events ──► StarRocks (ODS, DWD)
+                                                   └─ sai contract ──► friend_events_dlq
 ```
 
-Lý do tách: chỉ 1 nơi ghi Kafka và kiểm tra contract; service khác (sau này) gửi event cùng một cách, không cần Kafka client.
+Lý do tách: `friend_events` (StarRocks đọc) chỉ chứa event đã kiểm tra; 1 event sai không làm Routine Load lỗi / PAUSED; service khác sau này chỉ cần ghi Kafka theo contract.
 
-### 11.1 Công nghệ
+### 11.1 Topic
 
-| Thành phần | Chọn | Ghi chú |
-|---|---|---|
-| Ngôn ngữ | Go 1.22 | `net/http` (route theo method), `log/slog` JSON |
-| Kafka client | IBM/sarama `SyncProducer` | idempotent, `acks=all`, retry 5; trả về khi Kafka đã ghi |
-| Build / image | Bazel `rules_go` + gazelle, macro `com_tm_go_image` | binary static, image trên `gcr.io/distroless/base` |
+| Topic | Ghi | Đọc | Nội dung |
+|---|---|---|---|
+| `friend_service_events` | friend-service | event-gateway (group `event-gateway`) | event thô, key = `user_id` |
+| `friend_events` | event-gateway | StarRocks `rl_friend_ods`, `rl_friend_dwd` | event đúng contract, JSON chuẩn hoá, key = `user_id` |
+| `friend_events_dlq` | event-gateway | người vận hành | event sai nguyên văn, header `x-error`, `x-source-topic`, `x-source-partition`, `x-source-offset` |
 
-### 11.2 Cấu trúc code
+### 11.2 Xử lý
 
-| Package | Việc |
-|---|---|
-| `main.go` | đọc config, kết nối Kafka (thử lại tới 60 s khi Kafka chưa sẵn sàng), start HTTP, shutdown khi SIGINT / SIGTERM |
-| `internal/config` | biến môi trường |
-| `internal/event` | `FriendEvent` + `Validate()` theo contract, `Key()` = `user_id` |
-| `internal/handler` | HTTP handler |
-| `internal/producer` | interface `Producer` + bản sarama |
-
-### 11.3 API
-
-**`POST /v1/friend-events`**
-
-```json
-{
-  "events": [
-    {"user_id": 1, "friend_id": 2, "event_type": "REQUESTED", "event_time": "2026-09-23 10:00:00.000", "event_id": "0228440659025985536", "source": "friend-service"},
-    {"user_id": 2, "friend_id": 1, "event_type": "REVIEWED",  "event_time": "2026-09-23 10:00:00.000", "event_id": "0228440659025985537", "source": "friend-service"}
-  ]
-}
-```
-
-| Status | Khi nào | Body |
-|---|---|---|
-| `200` | mọi event đã lên Kafka | `{"accepted": 2}` |
-| `400` | JSON hỏng / có field lạ (`INVALID_JSON`), `events` rỗng (`EMPTY_EVENTS`), > 1000 event (`TOO_MANY_EVENTS`), event sai contract (`INVALID_EVENT`, message chỉ ra `events[i]`) | `{"error", "message"}` |
-| `503` | Kafka lỗi (`KAFKA_UNAVAILABLE`), client nên thử lại | `{"error", "message"}` |
-
-Có 1 event sai thì **không gửi event nào** trong request đó. Body tối đa 1 MiB.
+- Consumer group đọc tuần tự từng partition → giữ thứ tự event của cùng user.
+- Mỗi message: decode JSON (field lạ = lỗi), kiểm tra contract → gửi `friend_events` (key lấy lại từ `user_id`) hoặc `friend_events_dlq`.
+- Chỉ commit offset sau khi đã gửi xong (at-least-once). Kafka lỗi thì gửi lại với backoff (200 ms → 10 s) tới khi được, không bỏ qua message; rebalance / shutdown thì message chưa gửi sẽ được đọc lại. Trùng event không làm sai DW (mục 7.3).
+- Group mới đọc từ đầu topic (`OffsetOldest`).
 
 Kiểm tra contract: `user_id`, `friend_id` trong 1..2^53−1 và khác nhau; `event_type` 1 trong 7 status (chữ hoa); `event_time` đúng `yyyy-MM-dd HH:mm:ss.SSS`; `event_id` đúng 19 chữ số; `source` tuỳ chọn.
 
-**`GET /healthz`** → `{"ok": true}`.
+### 11.3 Công nghệ và cấu trúc code
+
+| Thành phần | Chọn |
+|---|---|
+| Ngôn ngữ | Go 1.22, `log/slog` JSON |
+| Kafka | IBM/sarama: `ConsumerGroup` + `SyncProducer` idempotent, `acks=all` |
+| Build / image | Bazel `rules_go` + gazelle, macro `com_tm_go_image`, image `gcr.io/distroless/base` |
+
+| Package | Việc |
+|---|---|
+| `main.go` | đọc config, kết nối Kafka (thử lại tới 60 s khi Kafka chưa sẵn sàng), chạy consumer + HTTP `/healthz`, shutdown khi SIGINT / SIGTERM |
+| `internal/config` | biến môi trường |
+| `internal/event` | `FriendEvent`, `Decode()`, `Validate()`, `Key()` |
+| `internal/relay` | định tuyến hợp lệ / DLQ, gửi lại khi Kafka lỗi |
+| `internal/consumer` | sarama consumer group, mark offset sau khi relay xong |
+| `internal/producer` | interface `Producer` + bản sarama |
+
+`GET /healthz` (cổng 8080) → `{"ok": true, "consuming": true}`; `consuming` = đã được chia partition.
 
 ### 11.4 Cấu hình
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `PORT` | `8080` | cổng HTTP |
+| `PORT` | `8080` | cổng HTTP health check |
 | `KAFKA_BROKERS` | `localhost:29092` | cách nhau bởi dấu phẩy |
-| `KAFKA_FRIEND_TOPIC` | `friend_events` | topic nhận friend event |
+| `KAFKA_GROUP_ID` | `event-gateway` | consumer group |
+| `KAFKA_INPUT_TOPIC` | `friend_service_events` | topic đọc |
+| `KAFKA_FRIEND_TOPIC` | `friend_events` | topic ghi event hợp lệ (StarRocks đọc) |
+| `KAFKA_DLQ_TOPIC` | `friend_events_dlq` | topic ghi event sai |
 | `KAFKA_CLIENT_ID` | `event-gateway` | |
 
 ### 11.5 Build và test
@@ -755,4 +756,4 @@ bazel run --config=linux-arm64 //com/tm/event-gateway:event_gateway_docker      
 bazel run //:gazelle                                                             # sau khi đổi import Go
 ```
 
-Partition: sarama dùng hash FNV-1a trên key, khác murmur2 của client Java / kafkajs. Không ảnh hưởng vì chỉ gateway ghi topic này; nếu sau này có producer khác cùng ghi `friend_events` thì phải thống nhất partitioner.
+Partition: friend-service (kafkajs) dùng murmur2, gateway (sarama) dùng FNV-1a trên key. Thứ tự vẫn giữ vì mỗi topic chỉ có 1 producer và key giống nhau luôn vào cùng partition của topic đó; nếu thêm producer khác cùng ghi 1 topic thì phải thống nhất partitioner.

@@ -1,4 +1,4 @@
-// DI container: mọi registration resolve được (không kết nối MongoDB / gateway thật: kết nối nằm trong lifecycle).
+// DI container: mọi registration resolve được (không kết nối MongoDB / Kafka thật: kết nối nằm trong lifecycle).
 // Thiếu hoặc sai tên dependency → test này fail, tương tự Dagger báo lỗi lúc compile.
 
 import assert from 'node:assert/strict';
@@ -9,9 +9,9 @@ const config: Cradle['config'] = {
   port: 0,
   mongoUri: 'mongodb://localhost:27017/?directConnection=true',
   mongoDb: 'friend_network_test',
-  eventGatewayUrl: 'http://localhost:8080',
-  eventGatewayTimeoutMs: 1000,
-  eventGatewayMaxAttempts: 3,
+  kafkaBrokers: ['localhost:29092'],
+  kafkaClientId: 'friend-service-test',
+  kafkaTopic: 'friend_service_events',
   source: 'friend-service-test',
   workerId: 0,
 };

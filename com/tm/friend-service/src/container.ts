@@ -20,7 +20,7 @@ export type Cradle = { config: Config } & UtilsCradle &
 type LifecycleName = { [K in keyof Cradle]: Cradle[K] extends Lifecycle ? K : never }[keyof Cradle];
 
 /** Thứ tự start; stop theo thứ tự ngược lại */
-export const LIFECYCLE_ORDER: readonly LifecycleName[] = ['mongoLifecycle', 'httpLifecycle'];
+export const LIFECYCLE_ORDER: readonly LifecycleName[] = ['mongoLifecycle', 'kafkaLifecycle', 'httpLifecycle'];
 
 export function buildContainer(config: Config): AwilixContainer<Cradle> {
   // PROXY: factory nhận object cradle, lấy dependency bằng destructuring
