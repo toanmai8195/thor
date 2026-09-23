@@ -1,9 +1,9 @@
-// Nghiệp vụ Friend Network: kiểm tra luật, ghi 2 chiều trong 1 transaction, commit xong gửi 2 event sang event-gateway; và các truy vấn.
+// Nghiệp vụ Friend Network: kiểm tra luật, ghi 2 chiều trong 1 transaction, commit xong gửi 2 event lên Kafka (event-gateway đọc); và các truy vấn.
 // Không biết gì về HTTP: nhận id đã parse, trả object thuần.
 
 import type { FriendshipDao, FriendshipWrite } from '../dao/friendship-dao.js';
 import type { DbSession, TransactionRunner } from '../dao/mongo.js';
-import type { EventPublisher, FriendEventPayload } from '../dao/event-gateway-client.js';
+import type { EventPublisher, FriendEventPayload } from '../dao/event-publisher.js';
 import { DomainError } from '../utils/errors.js';
 import type { IdGenerator } from '../utils/ids.js';
 import type { Logger } from '../utils/logger.js';
@@ -28,7 +28,7 @@ const BLOCK_TYPES = {
 // Kiểu dữ liệu trả ra ngoài
 // ---------------------------------------------------------------------------
 
-/** Event gửi sang event-gateway → Kafka topic friend_events (README 2.3) */
+/** Event gửi lên Kafka friend_service_events → event-gateway → friend_events (README 2.3) */
 export interface FriendEvent extends FriendEventPayload {
   event_type: Status;
 }
@@ -148,7 +148,7 @@ export class FriendController {
 
   /**
    * Thực hiện 1 hành động của actor với target: ghi 2 chiều trong 1 transaction,
-   * commit thành công thì gửi 2 event sang event-gateway.
+   * commit thành công thì gửi 2 event lên Kafka.
    */
   async apply(action: Action, actorId: number, targetId: number): Promise<ActionResult> {
     assertDifferent(actorId, targetId);
@@ -170,7 +170,7 @@ export class FriendController {
   }
 
   /**
-   * Gửi event sau khi DB đã commit. Gửi lỗi (sau khi client đã retry) thì chỉ log kèm event,
+   * Gửi event sau khi DB đã commit. Gửi lỗi (sau khi kafkajs đã retry) thì chỉ log kèm event,
    * không báo lỗi cho client vì hành động đã thành công; event đó không tới được DW.
    */
   private async publish(events: FriendEvent[]): Promise<void> {

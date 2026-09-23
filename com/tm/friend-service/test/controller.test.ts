@@ -131,7 +131,7 @@ test('DB ghi lỗi → không gửi event nào', async () => {
   assert.equal(events().length, before);
 });
 
-test('event-gateway lỗi sau khi commit → hành động vẫn thành công, log lỗi', async () => {
+test('Kafka lỗi sau khi commit → hành động vẫn thành công, log lỗi', async () => {
   const { controller, rows, key, errors } = setup(() => Date.now(), { gatewayDown: true });
   const result = await controller.apply(Action.REQUEST, 1, 2);
   assert.equal(result.status, Status.REQUESTED);

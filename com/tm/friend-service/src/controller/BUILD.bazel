@@ -1,6 +1,6 @@
 load("//com/tm/friend-service:ts.bzl", "ts_layer")
 
-# Controller: luật nghiệp vụ + điều phối Dao (transaction MongoDB, gửi event sang event-gateway).
+# Controller: luật nghiệp vụ + điều phối Dao (transaction MongoDB, gửi event lên Kafka).
 # Không biết HTTP; chỉ Handler (và MainServer để wire) được dùng.
 # Dao được tiêm qua DI (controller-module.ts).
 ts_layer(

@@ -8,12 +8,18 @@ import (
 )
 
 type Config struct {
-	// Cổng HTTP nhận event
+	// Cổng HTTP cho health check
 	Port int
 	// Danh sách broker Kafka
 	KafkaBrokers []string
-	// Topic nhận friend event (StarRocks Routine Load đọc topic này)
+	// Consumer group đọc InputTopic
+	GroupID string
+	// Topic friend-service gửi event vào
+	InputTopic string
+	// Topic đã kiểm tra contract; StarRocks Routine Load đọc topic này
 	FriendTopic string
+	// Topic chứa event sai contract (dead letter)
+	DLQTopic string
 	// client.id gửi lên Kafka
 	KafkaClientID string
 }
@@ -22,7 +28,10 @@ func Load() Config {
 	return Config{
 		Port:          intEnv("PORT", 8080),
 		KafkaBrokers:  splitEnv("KAFKA_BROKERS", "localhost:29092"),
+		GroupID:       strEnv("KAFKA_GROUP_ID", "event-gateway"),
+		InputTopic:    strEnv("KAFKA_INPUT_TOPIC", "friend_service_events"),
 		FriendTopic:   strEnv("KAFKA_FRIEND_TOPIC", "friend_events"),
+		DLQTopic:      strEnv("KAFKA_DLQ_TOPIC", "friend_events_dlq"),
 		KafkaClientID: strEnv("KAFKA_CLIENT_ID", "event-gateway"),
 	}
 }

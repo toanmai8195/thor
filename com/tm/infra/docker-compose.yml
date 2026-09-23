@@ -1,6 +1,9 @@
 # Môi trường local: MongoDB (replica set 1 node, cần cho transaction) + Kafka (KRaft)
 # + event-gateway (Go) + friend-service (TypeScript)
-#   friend-service ──HTTP──► event-gateway ──► Kafka friend_events ──► StarRocks
+#   friend-service ──► Kafka friend_service_events ──► event-gateway ──► Kafka friend_events ──► StarRocks
+#                                                           └─ sai contract ──► Kafka friend_events_dlq
+#
+# + StarRocks (allin1) đọc friend_events bằng Routine Load
 #
 #   bazel run --config=linux-arm64 //com/tm/event-gateway:event_gateway_docker         # build + load image
 #   bazel run --config=linux-arm64 //com/tm/friend-service/src:friend_service_docker   # build + load image
@@ -44,15 +47,57 @@ services:
       timeout: 10s
       retries: 20
 
+  # Tạo sẵn topic (3 partition) trước khi service / StarRocks dùng
+  kafka-init:
+    image: apache/kafka:3.8.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for t in friend_service_events friend_events friend_events_dlq; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic $$t --partitions 3 --replication-factor 1
+        done
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: "no"
+
+  # StarRocks FE + BE trong 1 container. MySQL client: mysql -h 127.0.0.1 -P 9030 -uroot
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.5.8
+    ports:
+      - "9030:9030" # MySQL protocol (FE)
+      - "8030:8030" # FE web UI
+      - "8040:8040" # BE web
+    volumes:
+      - starrocks-data:/data/deploy/starrocks
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -uroot --connect-timeout=5 -e \"SHOW BACKENDS\\G\" | grep -q 'Alive: true'"]
+      interval: 10s
+      retries: 60
+
+  # Tạo bảng ODS / DWD / DWS + Routine Load đọc friend_events (chạy lại nhiều lần được)
+  starrocks-init:
+    image: starrocks/allin1-ubuntu:3.5.8
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    volumes:
+      - ./starrocks:/init:ro
+    depends_on:
+      starrocks: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+    restart: "no"
+
   event-gateway:
     # Image do Bazel build (//com/tm/event-gateway:event_gateway_docker)
     image: com.tm.go.event_gateway:v1.0.0
-    ports: ["8080:8080"]
+    ports: ["8080:8080"] # chỉ /healthz
     environment:
       KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: event-gateway
+      KAFKA_INPUT_TOPIC: friend_service_events
       KAFKA_FRIEND_TOPIC: friend_events
+      KAFKA_DLQ_TOPIC: friend_events_dlq
     depends_on:
-      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
 
   friend-service:
     # Image do Bazel build (//com/tm/friend-service/src:friend_service_docker)
@@ -61,11 +106,28 @@ services:
     environment:
       MONGO_URI: mongodb://mongo:27017/?directConnection=true
       MONGO_DB: friend_network
-      EVENT_GATEWAY_URL: http://event-gateway:8080
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: friend_service_events
       WORKER_ID: "0"
     depends_on:
       mongo: { condition: service_healthy }
-      event-gateway: { condition: service_started }
+      kafka-init: { condition: service_completed_successfully }
+
+  # Sinh hành động giả gọi friend-service (mặc định 10 request/s). Không tự chạy:
+  #   bazel run --config=linux-arm64 //com/tm/friend-simulator:friend_simulator_docker
+  #   docker compose --profile simulator up -d friend-simulator
+  friend-simulator:
+    image: com.tm.go.friend_simulator:v1.0.0
+    profiles: ["simulator"]
+    ports: ["8090:8090"] # /healthz, /stats
+    environment:
+      FRIEND_SERVICE_URL: http://friend-service:3000
+      RPS: "10"
+      USERS: "1000"
+      USER_ID_START: "100000"
+    depends_on:
+      friend-service: { condition: service_started }
 
 volumes:
   mongo-data:
+  starrocks-data:
