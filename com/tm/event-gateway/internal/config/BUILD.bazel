@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "config",
+    srcs = ["config.go"],
+    importpath = "thor/com/tm/event-gateway/internal/config",
+    visibility = ["//com/tm/event-gateway:__subpackages__"],
+)

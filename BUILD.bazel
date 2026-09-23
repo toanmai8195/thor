@@ -5,12 +5,15 @@
 #
 # CÁCH DÙNG:
 #
-# 1. Build services:
-#    bazel build //com/tm/src/services/event-producer:event-producer
-#    bazel build //com/tm/src/services/tracking-ingestor:tracking-ingestor
+# 1. Build / test toàn repo:
+#    bazel build //...
+#    bazel test //...
 #
-# 2. Run service:
-#    bazel run //com/tm/src/services/event-producer:event-producer
+# 2. Run service local:
+#    bazel run //com/tm/friend-service/src:friend_service
+#
+#    Load image vào Docker:
+#    bazel run --config=linux-arm64 //com/tm/friend-service/src:friend_service_docker
 #
 # 3. Update dependencies (with bzlmod):
 #    go mod tidy
@@ -36,4 +39,30 @@ load("@gazelle//:def.bzl", "gazelle")
 # =============================================================================
 
 # gazelle:prefix thor
+# go_binary trong repo luôn tạo qua macro com_tm_go_image (kèm image).
+# gazelle:map_kind go_binary com_tm_go_image //tools/rules:com_tm_container.bzl
+# friend-service là TypeScript, gazelle bỏ qua
+# gazelle:exclude com/tm/friend-service
 gazelle(name = "gazelle")
+
+# =============================================================================
+# TARGET PLATFORMS CHO CONTAINER IMAGE
+# =============================================================================
+#   bazel run --config=linux-arm64 //...:<name>_docker   (Mac Apple Silicon)
+#   bazel run --config=linux-amd64 //...:<name>_docker   (server x86)
+
+platform(
+    name = "linux_amd64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+platform(
+    name = "linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:arm64",
+    ],
+)

@@ -1,0 +1,71 @@
+# Môi trường local: MongoDB (replica set 1 node, cần cho transaction) + Kafka (KRaft)
+# + event-gateway (Go) + friend-service (TypeScript)
+#   friend-service ──HTTP──► event-gateway ──► Kafka friend_events ──► StarRocks
+#
+#   bazel run --config=linux-arm64 //com/tm/event-gateway:event_gateway_docker         # build + load image
+#   bazel run --config=linux-arm64 //com/tm/friend-service/src:friend_service_docker   # build + load image
+#   cd com/tm/infra && docker compose up -d
+#   API:   http://localhost:3000/v1
+#   Kafka: localhost:29092 (từ máy host), kafka:9092 (trong network compose)
+services:
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      # Tự khởi tạo replica set lần đầu
+      test: >
+        mongosh --quiet --eval
+        "try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.8.0
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  event-gateway:
+    # Image do Bazel build (//com/tm/event-gateway:event_gateway_docker)
+    image: com.tm.go.event_gateway:v1.0.0
+    ports: ["8080:8080"]
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_FRIEND_TOPIC: friend_events
+    depends_on:
+      kafka: { condition: service_healthy }
+
+  friend-service:
+    # Image do Bazel build (//com/tm/friend-service/src:friend_service_docker)
+    image: com.tm.js.friend_service:v1.0.0
+    ports: ["3000:3000"]
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?directConnection=true
+      MONGO_DB: friend_network
+      EVENT_GATEWAY_URL: http://event-gateway:8080
+      WORKER_ID: "0"
+    depends_on:
+      mongo: { condition: service_healthy }
+      event-gateway: { condition: service_started }
+
+volumes:
+  mongo-data:

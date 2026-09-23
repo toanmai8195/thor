@@ -1,0 +1,18 @@
+load("//com/tm/friend-service:ts.bzl", "ts_layer")
+
+# Dao: truy cập MongoDB (friendships, transaction) và gửi event sang event-gateway (HTTP).
+# dao-module.ts tạo kết nối MongoDB / client gateway qua DI.
+# Không chứa luật nghiệp vụ; chỉ Controller (và MainServer để wire) được dùng.
+ts_layer(
+    name = "dao",
+    visibility = [
+        "//com/tm/friend-service/src:__pkg__",
+        "//com/tm/friend-service/src/controller:__pkg__",
+        "//com/tm/friend-service/test:__pkg__",
+    ],
+    deps = [
+        "//com/tm/friend-service:node_modules/awilix",
+        "//com/tm/friend-service:node_modules/mongodb",
+        "//com/tm/friend-service/src/utils",
+    ],
+)

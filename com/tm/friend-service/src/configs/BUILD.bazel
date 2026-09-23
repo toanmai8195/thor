@@ -1,0 +1,7 @@
+load("//com/tm/friend-service:ts.bzl", "ts_layer")
+
+# Configs: đọc biến môi trường. Chỉ MainServer đọc config rồi truyền xuống các layer.
+ts_layer(
+    name = "configs",
+    visibility = ["//com/tm/friend-service/src:__pkg__"],
+)

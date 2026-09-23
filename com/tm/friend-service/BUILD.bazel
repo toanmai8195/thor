@@ -1,0 +1,32 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@npm_friend_service//:defs.bzl", "npm_link_all_packages")
+
+# Friend Network service (Node.js / Express / MongoDB / Kafka).
+#   bazel run //com/tm/friend-service/src:friend_service
+#   bazel test //com/tm/friend-service/test/...
+#   bazel run --config=linux-arm64 //com/tm/friend-service/src:friend_service_docker
+#
+# Package này chỉ giữ npm deps và package.json; binary + image ở src/BUILD.bazel.
+
+# npm deps từ pnpm-lock.yaml → :node_modules/<package>
+npm_link_all_packages(name = "node_modules")
+
+exports_files([
+    "package.json",
+    "pnpm-lock.yaml",
+])
+
+# package.json phải có trong runfiles để Node chạy ESM ("type": "module")
+js_library(
+    name = "package_json",
+    srcs = ["package.json"],
+    visibility = ["//com/tm/friend-service:__subpackages__"],
+)
+
+# tsconfig dùng chung cho mọi ts_project của service
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    visibility = ["//com/tm/friend-service:__subpackages__"],
+)
