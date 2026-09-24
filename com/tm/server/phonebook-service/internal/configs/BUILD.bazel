@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# Configs: đọc biến môi trường. Chỉ MainServer đọc; layer khác nhận Settings của riêng nó.
+
+go_library(
+    name = "configs",
+    srcs = ["config.go"],
+    importpath = "thor/server/phonebook-service/internal/configs",
+    visibility = [
+        "//phonebook-service:__pkg__",
+    ],
+)

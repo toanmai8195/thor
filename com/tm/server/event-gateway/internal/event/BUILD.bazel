@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "event",
+    srcs = ["friend_event.go"],
+    importpath = "thor/server/event-gateway/internal/event",
+    visibility = ["//event-gateway:__subpackages__"],
+)
+
+go_test(
+    name = "event_test",
+    srcs = ["friend_event_test.go"],
+    embed = [":event"],
+)

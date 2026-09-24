@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# Handler: parse / kiểm tra tham số HTTP, gọi Controller, ghi response, đổi DomainError → HTTP status.
+# Không chứa luật nghiệp vụ, không đụng HBase / Kafka.
+
+go_library(
+    name = "handler",
+    srcs = [
+        "dto.go",
+        "errors.go",
+        "handler_module.go",
+        "health_handler.go",
+        "params.go",
+        "phonebook_handler.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/handler",
+    visibility = [
+        "//phonebook-service:__pkg__",
+        "//phonebook-service/internal/router:__pkg__",
+    ],
+    deps = [
+        "//phonebook-service/internal/controller",
+        "//phonebook-service/internal/utils",
+        "//phonebook-service/internal/utils/phonedigest",
+        "@org_uber_go_fx//:fx",
+    ],
+)

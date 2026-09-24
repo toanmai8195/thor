@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# Dao: HBase (bảng phonebook) và Kafka producer. Không chứa luật nghiệp vụ;
+# chỉ Controller (và MainServer để wire) được dùng.
+
+go_library(
+    name = "dao",
+    srcs = [
+        "dao_module.go",
+        "event_publisher.go",
+        "hbase.go",
+        "memory.go",
+        "phonebook_dao.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/dao",
+    visibility = [
+        "//phonebook-service:__pkg__",
+        "//phonebook-service/internal/controller:__pkg__",
+        "//phonebook-service/internal/router:__pkg__",
+    ],
+    deps = [
+        "@com_github_ibm_sarama//:sarama",
+        "@com_github_tsuna_gohbase//:gohbase",
+        "@com_github_tsuna_gohbase//hrpc",
+        "@org_uber_go_fx//:fx",
+    ],
+)
+
+go_test(
+    name = "dao_test",
+    srcs = ["event_publisher_test.go"],
+    embed = [":dao"],
+)

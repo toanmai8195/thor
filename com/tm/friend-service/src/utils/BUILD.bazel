@@ -1,8 +1,0 @@
-load("//com/tm/friend-service:ts.bzl", "ts_layer")
-
-# Utils: hàm dùng chung (lỗi, event_id, thời gian, logger, Lifecycle), không phụ thuộc layer khác.
-ts_layer(
-    name = "utils",
-    visibility = ["//com/tm/friend-service:__subpackages__"],
-    deps = ["//com/tm/friend-service:node_modules/awilix"],
-)

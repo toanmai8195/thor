@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sim",
+    srcs = [
+        "state.go",
+        "stats.go",
+    ],
+    importpath = "thor/server/friend-simulator/internal/sim",
+    visibility = ["//friend-simulator:__subpackages__"],
+)
+
+go_test(
+    name = "sim_test",
+    srcs = ["state_test.go"],
+    embed = [":sim"],
+)

@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "consumer",
+    srcs = ["consumer.go"],
+    importpath = "thor/server/event-gateway/internal/consumer",
+    visibility = ["//event-gateway:__subpackages__"],
+    deps = [
+        "//event-gateway/internal/producer",
+        "//event-gateway/internal/relay",
+        "@com_github_ibm_sarama//:sarama",
+    ],
+)

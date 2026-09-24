@@ -1,0 +1,18 @@
+load("//friend-service:ts.bzl", "ts_layer")
+
+# Handler: parse/validate request HTTP, gọi Controller, ghi response, map lỗi.
+# Chỉ Router (và MainServer để wire) được dùng.
+ts_layer(
+    name = "handler",
+    visibility = [
+        "//friend-service/src:__pkg__",
+        "//friend-service/src/router:__pkg__",
+        "//friend-service/test:__pkg__",
+    ],
+    deps = [
+        "//friend-service:node_modules/@types/express",
+        "//friend-service:node_modules/awilix",
+        "//friend-service/src/controller",
+        "//friend-service/src/utils",
+    ],
+)

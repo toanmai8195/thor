@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# Router: map method + path → handler.
+
+go_library(
+    name = "router",
+    srcs = [
+        "router.go",
+        "router_module.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/router",
+    visibility = [
+        "//phonebook-service:__pkg__",
+    ],
+    deps = [
+        "//phonebook-service/internal/handler",
+        "@org_uber_go_fx//:fx",
+    ],
+)
+
+go_test(
+    name = "router_test",
+    srcs = ["router_test.go"],
+    embed = [":router"],
+    deps = [
+        "//phonebook-service/internal/controller",
+        "//phonebook-service/internal/dao",
+        "//phonebook-service/internal/dao/book",
+        "//phonebook-service/internal/handler",
+        "//phonebook-service/internal/utils",
+        "//phonebook-service/internal/utils/phonecodec",
+        "//phonebook-service/internal/utils/phonedigest",
+    ],
+)

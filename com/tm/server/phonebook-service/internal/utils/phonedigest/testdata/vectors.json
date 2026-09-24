@@ -1,0 +1,210 @@
+[
+  {
+    "name": "rỗng",
+    "input": [],
+    "canonical": "",
+    "buckets": {},
+    "root": "f06919371e2c33b3321483f98fd94fcdea3d7a96c3cdaee90d1530627b600991"
+  },
+  {
+    "name": "cơ bản, sort theo số",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Mẹ"
+      },
+      {
+        "p": "0366621555",
+        "n": "Anh Tuấn"
+      }
+    ],
+    "canonical": "0366621555\tAnh Tuấn\n0901234567\tMẹ\n",
+    "buckets": {
+      "55": "09f24ae21475280d8639e59ce76107b54620b96451a8a97f0333241b7e494911",
+      "67": "dc2065f2509ba2920ecad0af74b9112cedb9b787d85a5c2de82aa9654373235e"
+    },
+    "root": "4514e307b14631495b221974f721d2bc983fa9b5fbf7bcd53be0b261e13d830f"
+  },
+  {
+    "name": "đổi tên → digest khác",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Mẹ yêu"
+      },
+      {
+        "p": "0366621555",
+        "n": "Anh Tuấn"
+      }
+    ],
+    "canonical": "0366621555\tAnh Tuấn\n0901234567\tMẹ yêu\n",
+    "buckets": {
+      "55": "09f24ae21475280d8639e59ce76107b54620b96451a8a97f0333241b7e494911",
+      "67": "548823b2d4e7a019cc20cc17d9b34a26f1691a16e9681f85d8be623d56f067ed"
+    },
+    "root": "568c6a948e8b97b6eb69109a14ba2a1e4cfe96bedcfecb0146eabf6b8848d8e6"
+  },
+  {
+    "name": "tên NFD (iOS) → NFC",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Mẹ"
+      }
+    ],
+    "canonical": "0901234567\tMẹ\n",
+    "buckets": {
+      "67": "dc2065f2509ba2920ecad0af74b9112cedb9b787d85a5c2de82aa9654373235e"
+    },
+    "root": "781d47b8fe3dfa0b87292f152b338d83f8307e50cad5c93c3d321f4396a6077d"
+  },
+  {
+    "name": "khoảng trắng, tab, xuống dòng, zero-width",
+    "input": [
+      {
+        "p": "0366621555",
+        "n": "  Anh\t\tTuấn \n​"
+      }
+    ],
+    "canonical": "0366621555\tAnh Tuấn\n",
+    "buckets": {
+      "55": "09f24ae21475280d8639e59ce76107b54620b96451a8a97f0333241b7e494911"
+    },
+    "root": "05812e072599e7a480b0f72b0ebf0b84e1d8e8528973126f45b4d2d62040c059"
+  },
+  {
+    "name": "NBSP giữa tên",
+    "input": [
+      {
+        "p": "0366621555",
+        "n": "Anh Tuấn"
+      }
+    ],
+    "canonical": "0366621555\tAnh Tuấn\n",
+    "buckets": {
+      "55": "09f24ae21475280d8639e59ce76107b54620b96451a8a97f0333241b7e494911"
+    },
+    "root": "05812e072599e7a480b0f72b0ebf0b84e1d8e8528973126f45b4d2d62040c059"
+  },
+  {
+    "name": "1 số nhiều tên → tên nhỏ nhất theo byte UTF-8",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Mẹ"
+      },
+      {
+        "p": "0901234567",
+        "n": "Bố"
+      }
+    ],
+    "canonical": "0901234567\tBố\n",
+    "buckets": {
+      "67": "96dc3da859bc964256b1fa4f99b4c6761b7e946ca89f140f9b07ccd062817cc5"
+    },
+    "root": "ce92106e25ab8248e5d3b5ca2965ef5e743f8173d0c9e4553e2a8bbd1b1c818e"
+  },
+  {
+    "name": "trùng hoàn toàn",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Mẹ"
+      },
+      {
+        "p": "0901234567",
+        "n": "Mẹ"
+      }
+    ],
+    "canonical": "0901234567\tMẹ\n",
+    "buckets": {
+      "67": "dc2065f2509ba2920ecad0af74b9112cedb9b787d85a5c2de82aa9654373235e"
+    },
+    "root": "781d47b8fe3dfa0b87292f152b338d83f8307e50cad5c93c3d321f4396a6077d"
+  },
+  {
+    "name": "bỏ số không hợp lệ",
+    "input": [
+      {
+        "p": "01666621555",
+        "n": "số cũ 11 số"
+      },
+      {
+        "p": "+84366621555",
+        "n": "có +84"
+      },
+      {
+        "p": "02436621555",
+        "n": "số bàn"
+      },
+      {
+        "p": "0366 621 555",
+        "n": "có dấu cách"
+      },
+      {
+        "p": "1900123456",
+        "n": "tổng đài"
+      },
+      {
+        "p": "0366621555",
+        "n": "Hợp lệ"
+      }
+    ],
+    "canonical": "0366621555\tHợp lệ\n",
+    "buckets": {
+      "55": "71aeba1cb3b0aaa79017f089583245cfa0e07736f9232a5376f2ab3322d8c90c"
+    },
+    "root": "44f91b808b51ce320e1769e20e93754d45fb4774c2a856139819dba949ac8262"
+  },
+  {
+    "name": "tên rỗng",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": ""
+      }
+    ],
+    "canonical": "0901234567\t\n",
+    "buckets": {
+      "67": "e8b86aefe61794645765b003f1b4edc2f9b4a443aad96798c289b91ae9da3014"
+    },
+    "root": "df2530656e3125ae0e2823e60b03b0a81941e4c37d42a97926181d653b75c6fb"
+  },
+  {
+    "name": "tên dài → cắt 100 ký tự",
+    "input": [
+      {
+        "p": "0901234567",
+        "n": "Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn "
+      }
+    ],
+    "canonical": "0901234567\tNguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Nguyễn Ng\n",
+    "buckets": {
+      "67": "2e18eeff454ce5ef38ef22a13a6d952c3651a37852f4d2cce0372a2df335a525"
+    },
+    "root": "cd0c2570d3b8e58c5632f5d01b2702b64e2789230c9fff122376f96bf2435513"
+  },
+  {
+    "name": "2 số cùng bucket 55, 1 số bucket 21",
+    "input": [
+      {
+        "p": "0987654321",
+        "n": "Anh Tuấn"
+      },
+      {
+        "p": "0366621555",
+        "n": "Mẹ"
+      },
+      {
+        "p": "0912000055",
+        "n": "Bố"
+      }
+    ],
+    "canonical": "0366621555\tMẹ\n0912000055\tBố\n0987654321\tAnh Tuấn\n",
+    "buckets": {
+      "21": "d3f840d7b2a9f1359a491f08d7c3249192c733265e3a758147fe25e388fa79bd",
+      "55": "f5dd9890ecaf47d585896b1df7ec160bf58c4927b4bf632885cc452c992cdebb"
+    },
+    "root": "0df9758d33196f8c10d580f1c83c740c2b4b1dd74e108c1551ede9622f3461e3"
+  }
+]

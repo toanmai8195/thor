@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# phoneset: tập số đã sort ↔ delta + varint, diff 2 tập.
+
+go_library(
+    name = "phoneset",
+    srcs = ["phoneset.go"],
+    importpath = "thor/server/phonebook-service/internal/utils/phoneset",
+    visibility = [
+        "//phonebook-service:__subpackages__",
+    ],
+)
+
+go_test(
+    name = "phoneset_test",
+    srcs = ["phoneset_test.go"],
+    embed = [":phoneset"],
+)

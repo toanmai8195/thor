@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/rules:com_tm_container.bzl", "com_tm_go_image")
+
+# event-gateway: đọc Kafka friend_service_events, kiểm tra contract, gửi friend_events (StarRocks) / DLQ.
+#   bazel run //event-gateway:event_gateway
+#   bazel test //event-gateway/...
+#   bazel run --config=linux-arm64 //event-gateway:event_gateway_docker
+com_tm_go_image(
+    name = "event_gateway",
+    package_name = package_name(),
+    embed = [":event-gateway_lib"],
+    exposed_ports = ["8080/tcp"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "event-gateway_lib",
+    srcs = ["main.go"],
+    importpath = "thor/server/event-gateway",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//event-gateway/internal/config",
+        "//event-gateway/internal/consumer",
+        "//event-gateway/internal/producer",
+        "//event-gateway/internal/relay",
+    ],
+)

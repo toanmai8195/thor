@@ -1,0 +1,48 @@
+load("//friend-service:ts.bzl", "ts_layer")
+load("//tools/rules:com_tm_container.bzl", "com_tm_js_image")
+
+# MainServer: dựng DI container từ module của từng layer, start các lifecycle.
+#   server.ts       entry point
+#   container.ts    gom register* của các layer
+#   http-server.ts  Express app + lifecycle HTTP
+# Binary + image nằm ở đây vì js_binary cần entry point cùng package.
+#   bazel run //friend-service/src:friend_service
+#   bazel run --config=linux-arm64 //friend-service/src:friend_service_docker
+#
+# Mỗi layer là 1 package Bazel con, visibility chặn gọi sai chiều:
+#   router → handler → controller → dao
+#   utils dùng chung; configs chỉ MainServer đọc
+ts_layer(
+    name = "mainserver",
+    srcs = [
+        "container.ts",
+        "http-server.ts",
+        "server.ts",
+    ],
+    visibility = ["//friend-service/test:__pkg__"],
+    deps = [
+        "//friend-service:node_modules/@types/express",
+        "//friend-service:node_modules/awilix",
+        "//friend-service:node_modules/express",
+        "//friend-service/src/configs",
+        "//friend-service/src/controller",
+        "//friend-service/src/dao",
+        "//friend-service/src/handler",
+        "//friend-service/src/router",
+        "//friend-service/src/utils",
+    ],
+)
+
+com_tm_js_image(
+    name = "friend_service",
+    package_name = package_name(),
+    srcs = [],
+    # server.js do ts_layer ":mainserver" sinh ra
+    entry_point = "server.js",
+    env = {"NODE_ENV": "production"},
+    exposed_ports = ["3000/tcp"],
+    deps = [
+        ":mainserver",
+        "//friend-service:package_json",
+    ],
+)

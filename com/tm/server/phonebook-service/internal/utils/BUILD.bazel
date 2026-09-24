@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# Utils: DomainError, logger, sinh sync_id. Dùng chung mọi layer, không phụ thuộc layer khác.
+
+go_library(
+    name = "utils",
+    srcs = [
+        "errors.go",
+        "idgen.go",
+        "utils_module.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/utils",
+    visibility = [
+        "//phonebook-service:__subpackages__",
+    ],
+    deps = ["@org_uber_go_fx//:fx"],
+)

@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# phonecodec: số di động VN 10 chữ số ↔ số nguyên, mã hoá / giải mã FF1 (PHONEBOOK.md mục 4).
+
+go_library(
+    name = "phonecodec",
+    srcs = ["phonecodec.go"],
+    importpath = "thor/server/phonebook-service/internal/utils/phonecodec",
+    visibility = [
+        "//phonebook-service:__subpackages__",
+    ],
+    deps = ["@com_github_capitalone_fpe//ff1"],
+)
+
+go_test(
+    name = "phonecodec_test",
+    srcs = ["phonecodec_test.go"],
+    embed = [":phonecodec"],
+)
