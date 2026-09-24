@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# Controller: nghiệp vụ check / upload bucket / diff / gửi Kafka / đọc danh bạ. Không biết về HTTP.
+
+go_library(
+    name = "controller",
+    srcs = [
+        "controller_module.go",
+        "phonebook_controller.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/controller",
+    visibility = [
+        "//phonebook-service:__pkg__",
+        "//phonebook-service/internal/handler:__pkg__",
+        "//phonebook-service/internal/router:__pkg__",
+    ],
+    deps = [
+        "//phonebook-service/internal/dao",
+        "//phonebook-service/internal/dao/book",
+        "//phonebook-service/internal/utils",
+        "//phonebook-service/internal/utils/phonecodec",
+        "//phonebook-service/internal/utils/phonedigest",
+        "//phonebook-service/internal/utils/phoneset",
+        "@org_uber_go_fx//:fx",
+    ],
+)
+
+go_test(
+    name = "controller_test",
+    srcs = ["phonebook_controller_test.go"],
+    embed = [":controller"],
+    deps = [
+        "//phonebook-service/internal/dao",
+        "//phonebook-service/internal/dao/book",
+        "//phonebook-service/internal/utils",
+        "//phonebook-service/internal/utils/phonecodec",
+        "//phonebook-service/internal/utils/phonedigest",
+    ],
+)

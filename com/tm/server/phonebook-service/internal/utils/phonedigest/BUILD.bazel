@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# phonedigest: bản tham chiếu digest danh bạ (chuẩn hoá, 100 bucket, root) — App phải ra cùng kết quả,
+# testdata/vectors.json dùng chung với iOS / Android (PHONEBOOK.md mục 2.5).
+
+go_library(
+    name = "phonedigest",
+    srcs = [
+        "bucket.go",
+        "phonedigest.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/utils/phonedigest",
+    visibility = [
+        "//phonebook-service:__subpackages__",
+    ],
+    deps = [
+        "//phonebook-service/internal/utils/phonecodec",
+        "@org_golang_x_text//unicode/norm",
+    ],
+)
+
+go_test(
+    name = "phonedigest_test",
+    srcs = ["phonedigest_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":phonedigest"],
+)

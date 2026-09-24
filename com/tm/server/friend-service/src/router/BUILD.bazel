@@ -1,0 +1,13 @@
+load("//friend-service:ts.bzl", "ts_layer")
+
+# Router: khai báo route → handler. Chỉ MainServer dùng.
+ts_layer(
+    name = "router",
+    visibility = ["//friend-service/src:__pkg__"],
+    deps = [
+        "//friend-service:node_modules/@types/express",
+        "//friend-service:node_modules/awilix",
+        "//friend-service:node_modules/express",
+        "//friend-service/src/handler",
+    ],
+)

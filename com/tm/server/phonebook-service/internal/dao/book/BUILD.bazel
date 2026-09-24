@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# book: danh bạ 1 thiết bị trong bộ nhớ + layout 2 cell HBase (b:ph, b:nm) + AES-GCM.
+# Controller dùng để đọc / ghi danh bạ thiết bị qua Dao.
+
+go_library(
+    name = "book",
+    srcs = [
+        "book.go",
+        "sealer.go",
+    ],
+    importpath = "thor/server/phonebook-service/internal/dao/book",
+    visibility = [
+        "//phonebook-service/internal/controller:__pkg__",
+        "//phonebook-service/internal/router:__pkg__",
+    ],
+    deps = [
+        "//phonebook-service/internal/utils/phonedigest",
+        "@com_github_klauspost_compress//zstd",
+    ],
+)
+
+go_test(
+    name = "book_test",
+    srcs = ["book_test.go"],
+    embed = [":book"],
+    deps = ["//phonebook-service/internal/utils/phonedigest"],
+)

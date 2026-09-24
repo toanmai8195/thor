@@ -1,0 +1,18 @@
+load("//friend-service:ts.bzl", "ts_layer")
+
+# Controller: luật nghiệp vụ + điều phối Dao (transaction MongoDB, gửi event lên Kafka).
+# Không biết HTTP; chỉ Handler (và MainServer để wire) được dùng.
+# Dao được tiêm qua DI (controller-module.ts).
+ts_layer(
+    name = "controller",
+    visibility = [
+        "//friend-service/src:__pkg__",
+        "//friend-service/src/handler:__pkg__",
+        "//friend-service/test:__pkg__",
+    ],
+    deps = [
+        "//friend-service:node_modules/awilix",
+        "//friend-service/src/dao",
+        "//friend-service/src/utils",
+    ],
+)

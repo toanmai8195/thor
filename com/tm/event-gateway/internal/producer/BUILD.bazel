@@ -1,9 +1,0 @@
-load("@rules_go//go:def.bzl", "go_library")
-
-go_library(
-    name = "producer",
-    srcs = ["kafka.go"],
-    importpath = "thor/com/tm/event-gateway/internal/producer",
-    visibility = ["//com/tm/event-gateway:__subpackages__"],
-    deps = ["@com_github_ibm_sarama//:sarama"],
-)

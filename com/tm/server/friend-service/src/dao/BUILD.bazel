@@ -1,0 +1,19 @@
+load("//friend-service:ts.bzl", "ts_layer")
+
+# Dao: truy cập MongoDB (friendships, transaction) và gửi event lên Kafka (event-gateway đọc).
+# dao-module.ts tạo kết nối MongoDB / Kafka qua DI.
+# Không chứa luật nghiệp vụ; chỉ Controller (và MainServer để wire) được dùng.
+ts_layer(
+    name = "dao",
+    visibility = [
+        "//friend-service/src:__pkg__",
+        "//friend-service/src/controller:__pkg__",
+        "//friend-service/test:__pkg__",
+    ],
+    deps = [
+        "//friend-service:node_modules/awilix",
+        "//friend-service:node_modules/kafkajs",
+        "//friend-service:node_modules/mongodb",
+        "//friend-service/src/utils",
+    ],
+)

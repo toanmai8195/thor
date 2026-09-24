@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("//tools/rules:com_tm_container.bzl", "com_tm_go_image")
+
+# phonebook-service: nhận danh bạ theo bucket, lưu HBase, gửi thay đổi lên Kafka (PHONEBOOK.md).
+# MainServer (main.go, app.go, http_server.go): đọc config, dựng DI (fx) từ module các layer, lifecycle.
+#   router ─► handler ─► controller ─► dao ─► HBase / Kafka      (utils: dùng chung; configs: chỉ MainServer)
+#   bazel run //phonebook-service:phonebook_service
+#   bazel test //phonebook-service/...
+#   bazel run --config=linux-arm64 //phonebook-service:phonebook_service_docker
+com_tm_go_image(
+    name = "phonebook_service",
+    package_name = package_name(),
+    embed = [":phonebook-service_lib"],
+    exposed_ports = ["3100/tcp"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "phonebook-service_lib",
+    srcs = [
+        "app.go",
+        "http_server.go",
+        "main.go",
+    ],
+    importpath = "thor/server/phonebook-service",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//phonebook-service/internal/configs",
+        "//phonebook-service/internal/controller",
+        "//phonebook-service/internal/dao",
+        "//phonebook-service/internal/handler",
+        "//phonebook-service/internal/router",
+        "//phonebook-service/internal/utils",
+        "@org_uber_go_fx//:fx",
+        "@org_uber_go_fx//fxevent",
+    ],
+)
+
+go_test(
+    name = "phonebook-service_test",
+    srcs = ["app_test.go"],
+    embed = [":phonebook-service_lib"],
+    deps = [
+        "//phonebook-service/internal/configs",
+        "@org_uber_go_fx//:fx",
+    ],
+)

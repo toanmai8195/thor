@@ -1,0 +1,31 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("//friend-service:ts.bzl", "ts_layer")
+
+# Unit test friend-service (node:test).
+#   bazel test //friend-service/test/...
+
+ts_layer(
+    name = "tests",
+    srcs = glob(["*.test.ts"]),
+    deps = [
+        "//friend-service/src:mainserver",
+        "//friend-service/src/controller",
+        "//friend-service/src/dao",
+        "//friend-service/src/handler",
+        "//friend-service/src/utils",
+    ],
+)
+
+# Mỗi file *.test.ts → 1 target <tên>_test
+[
+    js_test(
+        name = src.removesuffix(".test.ts").replace("-", "_") + "_test",
+        size = "small",
+        data = [
+            ":tests",
+            "//friend-service:package_json",
+        ],
+        entry_point = src.removesuffix(".ts") + ".js",
+    )
+    for src in glob(["*.test.ts"])
+]

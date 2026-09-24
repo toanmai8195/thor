@@ -1,0 +1,68 @@
+# =============================================================================
+# ROOT BUILD FILE
+# =============================================================================
+# File này chứa targets cho root package và project-wide configurations.
+#
+# CÁCH DÙNG:
+#
+# 1. Build / test toàn repo:
+#    bazel build //...
+#    bazel test //...
+#
+# 2. Run service local:
+#    bazel run //friend-service/src:friend_service
+#
+#    Load image vào Docker:
+#    bazel run --config=linux-arm64 //friend-service/src:friend_service_docker
+#
+# 3. Update dependencies (with bzlmod):
+#    go mod tidy
+#    # Dependencies are automatically resolved from go.mod via gazelle extension
+#
+# 4. Clean:
+#    bazel clean
+# =============================================================================
+
+load("@gazelle//:def.bzl", "gazelle")
+
+# =============================================================================
+# GAZELLE
+# =============================================================================
+# Gazelle tự động generate BUILD files cho Go projects.
+#
+# Cách dùng:
+# - bazel run //:gazelle          # Generate/update BUILD files
+# - bazel run //:gazelle -- fix   # Fix and update
+#
+# LƯU Ý: Với bzlmod (Bazel 6+), dependencies được quản lý qua go.mod
+# và go_deps extension trong MODULE.bazel, không cần gazelle-update-repos
+# =============================================================================
+
+# gazelle:prefix thor/server
+# go_binary trong repo luôn tạo qua macro com_tm_go_image (kèm image).
+# gazelle:map_kind go_binary com_tm_go_image //tools/rules:com_tm_container.bzl
+# friend-service là TypeScript, gazelle bỏ qua
+# gazelle:exclude friend-service
+gazelle(name = "gazelle")
+
+# =============================================================================
+# TARGET PLATFORMS CHO CONTAINER IMAGE
+# =============================================================================
+#   bazel run --config=linux-arm64 //...:<name>_docker   (Mac Apple Silicon)
+#   bazel run --config=linux-amd64 //...:<name>_docker   (server x86)
+
+platform(
+    name = "linux_amd64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+platform(
+    name = "linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:arm64",
+    ],
+)

@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "relay",
+    srcs = ["relay.go"],
+    importpath = "thor/server/event-gateway/internal/relay",
+    visibility = ["//event-gateway:__subpackages__"],
+    deps = [
+        "//event-gateway/internal/event",
+        "//event-gateway/internal/producer",
+    ],
+)
+
+go_test(
+    name = "relay_test",
+    srcs = ["relay_test.go"],
+    embed = [":relay"],
+    deps = ["//event-gateway/internal/producer"],
+)

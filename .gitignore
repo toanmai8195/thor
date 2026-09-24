@@ -9,8 +9,9 @@
 # =============================================================================
 # Bazel tạo các symlinks và directories trong project root
 
-# Bazel symlinks (tạo bởi bazel build)
+# Bazel symlinks (tạo bởi bazel build, trong Bazel module root com/tm/server)
 /bazel-*
+/com/tm/server/bazel-*
 
 # Bazel user-specific files
 .bazelrc.user
@@ -71,6 +72,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!com/tm/app/src/lib/
 lib64/
 parts/
 sdist/
